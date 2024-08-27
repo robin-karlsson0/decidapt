@@ -19,7 +19,7 @@ class ActionDecisionActionServer(Node):
         self._action_server = ActionServer(
             self,
             ActionDecision,
-            'pred_action',
+            'action_decision_action_server',
             execute_callback=self.execute_callback,
         )
 

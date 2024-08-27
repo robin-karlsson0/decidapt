@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from robot_action_interfaces.action import LLM
+from robot_action_interfaces.action import ActionDecision
 from robot_state_interfaces.srv import State
 from std_msgs.msg import String
 
@@ -20,22 +20,25 @@ class ActionController(Node):
         while not self.state_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('Service not available, waiting again...')
 
-        self.action_decision_client = self.create_client(State, 'pred_action')
-        while not self.state_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('Service not available, waiting again...')
-
         self.state_req = State.Request()
-        self.action_req = State.Request()
+
+        ####################
+        #  Action servers
+        ####################
+        self._ac_action_client = ActionClient(self, ActionDecision,
+                                              'action_decision_action_server')
+
+        self.ac_goal = ActionDecision.Goal()
 
         # Action response publisher
         self.action_resp_pub = self.create_publisher(
             String,
-            'action_responese',
+            'action_response',
             10,
         )
 
         # Timer for action cycle
-        self.timer = self.create_timer(0.5, self.run_action_cycle)
+        self.timer = self.create_timer(5, self.run_action_cycle)
 
     def run_action_cycle(self):
         '''
@@ -51,31 +54,51 @@ class ActionController(Node):
         '''
         '''
         state_future = self.state_client.call_async(self.state_req)
-        state_future.add_done_callback(self.get_action_decision)
+        state_future.add_done_callback(self.send_ac_goal)
 
-    def get_action_decision(self, state_future):
+    def send_ac_goal(self, state_future):
+        '''
+        '''
+        # Unpack state response
+        state = state_future.result().out_state
+
+        # Create action decision goal
+        ac_goal = ActionDecision.Goal()
+        ac_goal.state = state
+
+        self._ac_action_client.wait_for_server()
+        self.send_ac_goal_future = self._ac_action_client.send_goal_async(
+            ac_goal)
+        self.send_ac_goal_future.add_done_callback(
+            self.ac_goal_response_callback)
+
+    def ac_goal_response_callback(self, ac_future):
+        '''
+        '''
+        goal_handle = ac_future.result()
+        if not goal_handle.accepted:
+            self.get_logger().info('Goal rejected')
+            return
+
+        self.get_ac_result_future = goal_handle.get_result_async()
+        self.get_ac_result_future.add_done_callback(
+            self.get_ac_result_callback)
+
+    def get_ac_result_callback(self, ac_future):
+        '''
+        '''
+        ac_result = ac_future.result().result
+        pred_action = ac_result.pred_action
+
+        self.get_logger().info(f'Received action: {pred_action}')
+
+    def execute_action(self, goal_future):
         '''
         '''
         try:
-            state_resp = state_future.result()
-            state = state_resp.out_state
-            self.get_logger().info('Received state')
-
-        except Exception as e:
-            self.get_logger().info('Service call failed %r' % (e, ))
-            return None
-
-        self.action_req.in_state = state
-        action_future = self.action_decision_client.call_async(self.action_req)
-        action_future.add_done_callback(self.execute_action)
-
-    def execute_action(self, action_future):
-        '''
-        '''
-        try:
-            action_resp = action_future.result()
-            action = action_resp.out_state
-            self.get_logger().info('Received action')
+            goal_handler = goal_future.result()
+            action = action_resp.pred_action
+            self.get_logger().info(f'Received action: {action}')
 
         except Exception as e:
             self.get_logger().info('Service call failed %r' % (e, ))
