@@ -7,6 +7,9 @@
   <maintainer email="robin.karlsson0@gmail.com">robin</maintainer>
   <license>TODO: License declaration</license>
 
+  <depend>llm_action_interfaces</depend>
+  <depend>robot_action_interfaces</depend>
+
   <depend>rclpy</depend>
 
   <test_depend>ament_copyright</test_depend>

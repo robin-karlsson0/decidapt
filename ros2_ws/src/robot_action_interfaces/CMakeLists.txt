@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(llm_action_interfaces)
+project(robot_action_interfaces)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -26,7 +26,7 @@ endif()
 # Generate ROS 2 action interfaces
 find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "action/LLM.action"
+  "action/ActionDecision.action"
 )
 
 ament_package()
