@@ -14,7 +14,7 @@ setup(
     install_requires=[
         'setuptools',
         'llm_action_interfaces',
-        'robot_action_interfaces',
+        'robot_reply_interfaces',
     ],
     zip_safe=True,
     maintainer='robin',

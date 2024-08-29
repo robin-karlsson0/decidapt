@@ -40,11 +40,15 @@ class ActionDecisionActionServer(Node):
 
         # Create action decision prompt
         prompt = 'Task: Predict the optimal action to take in order to achieve the goal based on the following robot world state:\n\n'
+        prompt += '<robot_world_state>\n'
         prompt += state
-        prompt += '\n\nOutput the alphabet character of the optimal action choice in the following list of actions:\n\n'
+        prompt += '\n</robot_world_state>\n'
+        prompt += '\n'
+        prompt += 'Output the alphabet character (ex: a) of the optimal action choice among the following list of valid actions:\n\n'
         prompt += f'Do nothing: {self.do_nothing_action}\n'
-        prompt += 'Formulate a vocal reply: b\n'
-        prompt += 'Character of optimal action choice: '
+        prompt += 'Reply: b\n'
+        prompt += '\n'
+        prompt += 'Predicted action: '
 
         llm_goal = LLM.Goal()
         llm_goal.prompt = prompt

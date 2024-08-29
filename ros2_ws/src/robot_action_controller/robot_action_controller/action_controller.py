@@ -1,7 +1,9 @@
+import numpy as np
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from robot_action_interfaces.action import ActionDecision
+from robot_reply_interfaces.action import ReplyAction
 from robot_state_interfaces.srv import State
 from std_msgs.msg import String
 
@@ -28,17 +30,20 @@ class ActionController(Node):
         self._ac_action_client = ActionClient(self, ActionDecision,
                                               'action_decision_action_server')
 
-        self.ac_goal = ActionDecision.Goal()
-
-        # Action response publisher
-        self.action_resp_pub = self.create_publisher(
-            String,
-            'action_response',
-            10,
-        )
+        self._reply_action_client = ActionClient(self, ReplyAction,
+                                                 'reply_action_server')
+        self._reply_action_send_goal_future = None
 
         # Timer for action cycle
-        self.timer = self.create_timer(5, self.run_action_cycle)
+        self.timer = self.create_timer(10, self.run_action_cycle)
+
+        # Used to prevent spamming state with high-freq. 'do nothing' actions
+        self.prev_action = None
+
+        self.valid_actions = {
+            'a': 'do_nothing',
+            'b': 'reply',
+        }
 
     def run_action_cycle(self):
         '''
@@ -61,6 +66,9 @@ class ActionController(Node):
         '''
         # Unpack state response
         state = state_future.result().out_state
+
+        # State of current action cycle
+        self.current_state = state
 
         # Create action decision goal
         ac_goal = ActionDecision.Goal()
@@ -92,17 +100,11 @@ class ActionController(Node):
 
         self.get_logger().info(f'Received action: {pred_action}')
 
-    def execute_action(self, goal_future):
-        '''
-        '''
-        try:
-            goal_handler = goal_future.result()
-            action = action_resp.pred_action
-            self.get_logger().info(f'Received action: {action}')
+        self.execute_action(pred_action)
 
-        except Exception as e:
-            self.get_logger().info('Service call failed %r' % (e, ))
-            return None
+    def execute_action(self, pred_action: str):
+        '''
+        '''
 
         # TODO How to handle action execution
         # 1. Select appropriate action wrapper
@@ -111,22 +113,43 @@ class ActionController(Node):
         # 4. Action response is published to /action_response
         # 5. Callback chain terminates
 
-        if action == 'a':
+        valid_action_set = list(self.valid_actions.keys())
+
+        if pred_action not in valid_action_set:
+            self.get_logger().info(f'Invalid action received: {pred_action}')
+            pred_action = np.random.choice(valid_action_set, p=[0.0, 1.0])
+            self.get_logger().info(f'==> Random action: {pred_action}')
+
+        if pred_action == 'a':
             # TODO Do nothing action
             self.get_logger().info('Executing action a')
-            action_resp = "No action"
+            # Don't publish sequantial 'do nothing' actions
+            if pred_action == 'a' and self.prev_action == 'a':
+                return
+            msg = String()
+            msg.data = "Robot action: Do nothing"
+            self.action_resp_pub.publish(msg)
 
-        elif action == 'b':
+        elif pred_action == 'b':
+            # TODO Handle reply if already speaking using /is_speaking topic
             self.get_logger().info('Executing action b')
-            action_resp = "Dummy response"
+            goal = ReplyAction.Goal()
+            goal.state = self.current_state
+            self.reply_action_send_goal_future = self._reply_action_client.send_goal_async(
+                goal)
+            # self.reply_action_done_callback.add_done_callback(
+            #     self.action_done_callback)
 
         else:
-            self.get_logger().info(f'Invalid action received: {action}')
-            action_resp = f'Invalid action received: {action}'
+            self.get_logger().error(
+                f'Undefined behavior for action: {pred_action}')
+            # action_resp = f'Undefined behavior: {pred_action}'
 
-        msg = String()
-        msg.data = action_resp
-        self.action_resp_pub.publish(msg)
+        # msg = String()
+        # msg.data = action_resp
+        # self.action_resp_pub.publish(msg)
+
+        self.prev_action = pred_action
 
         # Execute action
         # if action == 'action_1':
@@ -135,6 +158,11 @@ class ActionController(Node):
         #     self.get_logger().info('Executing action 2')
         # else:
         #     self.get_logger().info('No action to execute')
+
+    # def reply_action_done_callback(self, future):
+    #     '''
+    #     '''
+    #     self.reply_action_send_goal_future = None
 
 
 def main(args=None):

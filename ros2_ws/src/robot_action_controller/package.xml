@@ -8,9 +8,11 @@
   <license>TODO: License declaration</license>
 
   <depend>llm_action_interfaces</depend>
-  <depend>robot_action_interfaces</depend>
+  <depend>robot_reply_interfaces</depend>
 
   <depend>rclpy</depend>
+
+  <exec_depend>robot_action_interfaces</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
