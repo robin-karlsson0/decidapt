@@ -9,7 +9,7 @@
 
   <depend>llm_action_interfaces</depend>
   <depend>robot_reply_interfaces</depend>
-
+  <depend>mol-robot-prompt-templates</depend>
   <depend>rclpy</depend>
 
   <exec_depend>robot_action_interfaces</exec_depend>

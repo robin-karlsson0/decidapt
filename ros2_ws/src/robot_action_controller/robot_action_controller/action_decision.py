@@ -5,6 +5,7 @@ from llm_action_interfaces.action import LLM
 from rclpy.action import ActionClient, ActionServer
 from rclpy.node import Node
 from robot_action_interfaces.action import ActionDecision
+from robot_pt import action_decision_pt, system_msg_pt
 
 
 class ActionDecisionActionServer(Node):
@@ -26,7 +27,7 @@ class ActionDecisionActionServer(Node):
         self._action_client = ActionClient(self, LLM, 'llm_action_server')
 
         # All valid actions represented by a single token output
-        self.max_tokens = 1
+        self.max_tokens = 10
         self.do_nothing_action = 'a'
 
     async def execute_callback(self, goal_handle):
@@ -38,20 +39,12 @@ class ActionDecisionActionServer(Node):
         goal = goal_handle.request
         state = goal.state
 
-        # Create action decision prompt
-        prompt = 'Task: Predict the optimal action to take in order to achieve the goal based on the following robot world state:\n\n'
-        prompt += '<robot_world_state>\n'
-        prompt += state
-        prompt += '\n</robot_world_state>\n'
-        prompt += '\n'
-        prompt += 'Output the alphabet character (ex: a) of the optimal action choice among the following list of valid actions:\n\n'
-        prompt += f'Do nothing: {self.do_nothing_action}\n'
-        prompt += 'Reply: b\n'
-        prompt += '\n'
-        prompt += 'Predicted action: '
+        system_msg = system_msg_pt()
+        user_msg = action_decision_pt(state)
 
         llm_goal = LLM.Goal()
-        llm_goal.prompt = prompt
+        llm_goal.system_prompt = system_msg
+        llm_goal.prompt = user_msg
         llm_goal.max_tokens = self.max_tokens
 
         # (1) Send goal asynchronously

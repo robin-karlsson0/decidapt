@@ -15,6 +15,9 @@ class ActionController(Node):
     def __init__(self):
         super().__init__('action_manager')
 
+        self.declare_parameter('ac_loop_freq', 1.0)
+        self.ac_loop_freq = float(self.get_parameter('ac_loop_freq').value)
+
         #################################
         #  Service clients
         #################################
@@ -34,8 +37,16 @@ class ActionController(Node):
                                                  'reply_action_server')
         self._reply_action_send_goal_future = None
 
-        # Timer for action cycle
-        self.timer = self.create_timer(10, self.run_action_cycle)
+        # Action response publisher
+        self.action_resp_pub = self.create_publisher(
+            String,
+            'action_response',
+            10,
+        )
+
+        # Timer for action cycle [s]
+        self.timer = self.create_timer(self.ac_loop_freq,
+                                       self.run_action_cycle)
 
         # Used to prevent spamming state with high-freq. 'do nothing' actions
         self.prev_action = None
@@ -117,8 +128,8 @@ class ActionController(Node):
 
         if pred_action not in valid_action_set:
             self.get_logger().info(f'Invalid action received: {pred_action}')
-            pred_action = np.random.choice(valid_action_set, p=[0.0, 1.0])
-            self.get_logger().info(f'==> Random action: {pred_action}')
+            pred_action = 'a'  # np.random.choice(valid_action_set, p=[0.5, 0.5])
+            self.get_logger().info(f'==> Do nothing: {pred_action}')
 
         if pred_action == 'a':
             # TODO Do nothing action

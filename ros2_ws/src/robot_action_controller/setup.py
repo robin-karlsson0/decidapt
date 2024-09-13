@@ -15,6 +15,8 @@ setup(
         'setuptools',
         'llm_action_interfaces',
         'robot_reply_interfaces',
+        'robot_action_interfaces',
+        'mol-robot-prompt-templates',
     ],
     zip_safe=True,
     maintainer='robin',
