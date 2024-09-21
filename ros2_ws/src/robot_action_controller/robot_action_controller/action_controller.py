@@ -1,4 +1,3 @@
-import numpy as np
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -6,6 +5,55 @@ from robot_action_interfaces.action import ActionDecision
 from robot_reply_interfaces.action import ReplyAction
 from robot_state_interfaces.srv import State
 from std_msgs.msg import String
+
+
+class ActionManager:
+    '''
+    Allows running multiple actions of different names in parallel.
+
+    Dictionary 'running_actions' keep track of running actions by name:
+        running_actions[action_name] --> action_client
+    '''
+    def __init__(self):
+        self.running_actions = {}
+
+    def start_action(
+            self,
+            action_name: str,
+            action_client: ActionClient,
+            goal,
+            ) -> ActionClient:
+        '''
+        Adds ROS 2 Action Client object to set of running actions and returns
+        the Action Goal's future callback function.
+
+        Args:
+            action_name: Identifying name of action
+            action_client: ROS 2 Action Client object
+            goal: Action goal object
+        '''
+        # TODO Remove? Or update state with "current running actions"?
+        if action_name in self.running_actions:
+            self.cancel_action(action_name)
+
+        self.running_actions[action_name] = action_client
+
+        action_send_goal_future = action_client.send_goal_async(goal)
+        return action_send_goal_future
+
+    def cancel_action(self, action_name: str):
+        if action_name in self.running_actions:
+            self.running_actions[action_name].cancel_goal_async()
+            del self.running_actions[action_name]
+
+    def is_action_running(self, action_name: str):
+        return action_name in self.running_actions
+
+    def complete_action(self, action_name: str):
+        '''
+        '''
+        if action_name in self.running_actions:
+            del self.running_actions[action_name]
 
 
 class ActionController(Node):
@@ -35,7 +83,6 @@ class ActionController(Node):
 
         self._reply_action_client = ActionClient(self, ReplyAction,
                                                  'reply_action_server')
-        self._reply_action_send_goal_future = None
 
         # Action response publisher
         self.action_resp_pub = self.create_publisher(
@@ -50,6 +97,9 @@ class ActionController(Node):
 
         # Used to prevent spamming state with high-freq. 'do nothing' actions
         self.prev_action = None
+
+        self.get_logger().info('Initializing ActionManager')
+        self.action_manager = ActionManager()
 
         self.valid_actions = {
             'a': 'do_nothing',
@@ -133,7 +183,7 @@ class ActionController(Node):
 
         if pred_action == 'a':
             # TODO Do nothing action
-            self.get_logger().info('Executing action a')
+            # self.get_logger().info('Executing action a')
             # Don't publish sequantial 'do nothing' actions
             if pred_action == 'a' and self.prev_action == 'a':
                 return
@@ -142,38 +192,43 @@ class ActionController(Node):
             self.action_resp_pub.publish(msg)
 
         elif pred_action == 'b':
-            # TODO Handle reply if already speaking using /is_speaking topic
-            self.get_logger().info('Executing action b')
-            goal = ReplyAction.Goal()
-            goal.state = self.current_state
-            self.reply_action_send_goal_future = self._reply_action_client.send_goal_async(
-                goal)
-            # self.reply_action_done_callback.add_done_callback(
-            #     self.action_done_callback)
+            if not self.action_manager.is_action_running('reply'):
+                # self.get_logger().info('Executing action b')
+                goal = ReplyAction.Goal()
+                goal.state = self.current_state
+                self.reply_action_send_goal_future = self.action_manager.start_action(
+                    'reply',
+                    self._reply_action_client,
+                    goal,
+                )
+                # NOTE: done ==> 'Send goal' is done (not action complete)
+                self.reply_action_send_goal_future.add_done_callback(
+                    self.reply_action_response_callback)
 
         else:
             self.get_logger().error(
                 f'Undefined behavior for action: {pred_action}')
-            # action_resp = f'Undefined behavior: {pred_action}'
-
-        # msg = String()
-        # msg.data = action_resp
-        # self.action_resp_pub.publish(msg)
 
         self.prev_action = pred_action
 
-        # Execute action
-        # if action == 'action_1':
-        #     self.get_logger().info('Executing action 1')
-        # elif action == 'action_2':
-        #     self.get_logger().info('Executing action 2')
-        # else:
-        #     self.get_logger().info('No action to execute')
-
-    # def reply_action_done_callback(self, future):
-    #     '''
-    #     '''
-    #     self.reply_action_send_goal_future = None
+    def reply_action_response_callback(self, future):
+        '''
+        '''
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().info('\'Reply\' action goal rejected')
+            self.action_manager.complete_action('reply')
+            return
+        
+        self.get_reply_result_future = goal_handle.get_result_async()
+        self.get_reply_result_future.add_done_callback(
+            self.reply_action_completed_callback)
+        
+    def reply_action_completed_callback(self, future):
+        '''
+        '''
+        self.action_manager.complete_action('reply')
+        self.get_logger().info('\'Reply\' action completed')
 
 
 def main(args=None):
