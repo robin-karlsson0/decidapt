@@ -71,9 +71,10 @@ class ActionController(Node):
         #################################
         self.state_client = self.create_client(State, 'get_state')
         while not self.state_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('Service not available, waiting again...')
+            self.get_logger().info('\'state_client\' service not available, waiting again...')
 
         self.state_req = State.Request()
+
 
         ####################
         #  Action servers
@@ -84,6 +85,12 @@ class ActionController(Node):
         self._reply_action_client = ActionClient(self, ReplyAction,
                                                  'reply_action_server')
 
+        # Action decision publisher
+        self.action_dec_pub = self.create_publisher(
+            String,
+            'action_decision',
+            10,
+        )
         # Action response publisher
         self.action_resp_pub = self.create_publisher(
             String,
@@ -188,11 +195,19 @@ class ActionController(Node):
             if pred_action == 'a' and self.prev_action == 'a':
                 return
             msg = String()
-            msg.data = "Robot action: Do nothing"
-            self.action_resp_pub.publish(msg)
+            msg.data = "<Robot idle action> Robot decides to do nothing."
+            self.action_dec_pub.publish(msg)
 
         elif pred_action == 'b':
-            if not self.action_manager.is_action_running('reply'):
+
+            msg = String()
+            msg.data = "<Robot started reply action> Robot decides to reply to user."
+            self.action_dec_pub.publish(msg)
+
+            if self.prev_action == 'b':
+                self.get_logger().info('Repeated "b" action !!!')
+            
+            elif not self.action_manager.is_action_running('reply'):
                 # self.get_logger().info('Executing action b')
                 goal = ReplyAction.Goal()
                 goal.state = self.current_state

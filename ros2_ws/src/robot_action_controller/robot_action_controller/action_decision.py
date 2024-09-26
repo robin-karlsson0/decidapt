@@ -24,7 +24,10 @@ class ActionDecisionActionServer(Node):
             execute_callback=self.execute_callback,
         )
 
-        self._action_client = ActionClient(self, LLM, 'llm_action_server')
+        self.declare_parameter(
+            'llm_action_server', 'llm_action_server_ad_8b_action')
+        llm_action_server_name = self.get_parameter('llm_action_server').value
+        self._action_client = ActionClient(self, LLM, llm_action_server_name)
 
         # All valid actions represented by a single token output
         self.max_tokens = 10
