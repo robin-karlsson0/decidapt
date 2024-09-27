@@ -45,6 +45,10 @@ class ActionDecisionActionServer(Node):
         system_msg = system_msg_pt()
         user_msg = action_decision_pt(state)
 
+        with open('/tmp/action_decision_prompt.txt', 'w') as f:
+            prompt = 'SYSTEM_MSG:\n' + system_msg + '\n\nUSER_MSG:\n' + user_msg
+            f.write(prompt)
+
         llm_goal = LLM.Goal()
         llm_goal.system_prompt = system_msg
         llm_goal.prompt = user_msg
@@ -70,7 +74,7 @@ class ActionDecisionActionServer(Node):
         result.pred_action = llm_result_msg.response
 
         goal_handle.succeed()
-        self.get_logger().info(f'Return response: {result}')
+        self.get_logger().info(f"Return '{result.pred_action}'")
 
         return result
 

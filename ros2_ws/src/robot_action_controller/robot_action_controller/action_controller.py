@@ -6,7 +6,6 @@ from robot_reply_interfaces.action import ReplyAction
 from robot_state_interfaces.srv import State
 from std_msgs.msg import String
 
-
 class ActionManager:
     '''
     Allows running multiple actions of different names in parallel.
@@ -137,10 +136,11 @@ class ActionController(Node):
 
         # State of current action cycle
         self.current_state = state
+        self.current_state_chunks = self.extract_state_chunks(self.current_state)
 
         # Create action decision goal
         ac_goal = ActionDecision.Goal()
-        ac_goal.state = state
+        ac_goal.state = self.current_state_chunks
 
         self._ac_action_client.wait_for_server()
         self.send_ac_goal_future = self._ac_action_client.send_goal_async(
@@ -181,11 +181,15 @@ class ActionController(Node):
         # 4. Action response is published to /action_response
         # 5. Callback chain terminates
 
+        # Get first character out of a potential sequence
+        if len(pred_action) > 0:
+            pred_action = pred_action[0]
+
         valid_action_set = list(self.valid_actions.keys())
 
         if pred_action not in valid_action_set:
             self.get_logger().info(f'Invalid action received: {pred_action}')
-            pred_action = 'a'  # np.random.choice(valid_action_set, p=[0.5, 0.5])
+            pred_action = 'a'
             self.get_logger().info(f'==> Do nothing: {pred_action}')
 
         if pred_action == 'a':
@@ -195,22 +199,23 @@ class ActionController(Node):
             if pred_action == 'a' and self.prev_action == 'a':
                 return
             msg = String()
-            msg.data = "<Robot idle action> Robot decides to do nothing."
+            msg.data = "<Robot idle action> Robot decides to take no new action."
             self.action_dec_pub.publish(msg)
 
         elif pred_action == 'b':
-
-            msg = String()
-            msg.data = "<Robot started reply action> Robot decides to reply to user."
-            self.action_dec_pub.publish(msg)
 
             if self.prev_action == 'b':
                 self.get_logger().info('Repeated "b" action !!!')
             
             elif not self.action_manager.is_action_running('reply'):
+
+                msg = String()
+                msg.data = "<Robot started reply action> Robot decides to reply to user."
+                self.action_dec_pub.publish(msg)
+
                 # self.get_logger().info('Executing action b')
                 goal = ReplyAction.Goal()
-                goal.state = self.current_state
+                goal.state = self.current_state_chunks
                 self.reply_action_send_goal_future = self.action_manager.start_action(
                     'reply',
                     self._reply_action_client,
@@ -245,6 +250,30 @@ class ActionController(Node):
         self.action_manager.complete_action('reply')
         self.get_logger().info('\'Reply\' action completed')
 
+    @staticmethod
+    def extract_state_chunks(state: str) -> str:
+        ''' Returns a substring representing the state chunks.
+        '''
+        # Split the text into lines
+        lines = state.split('\n')
+        
+        # Find the indices of the last pair of <state_chunks> and </state_chunks> tags
+        start_index = -1
+        end_index = -1
+        
+        for i, line in enumerate(lines):
+            if line.strip() == '<state_chunks>':
+                start_index = i
+            elif line.strip() == '</state_chunks>':
+                end_index = i
+        
+        # If we found both tags
+        if start_index != -1 and end_index != -1 and start_index < end_index:
+            # Extract the content between the tags, including the tags themselves
+            chunk = '\n'.join(lines[start_index+1:end_index])
+            return chunk.strip()
+        else:
+            return "No valid state chunks found"
 
 def main(args=None):
     rclpy.init(args=args)
