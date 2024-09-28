@@ -203,11 +203,8 @@ class ActionController(Node):
             self.action_dec_pub.publish(msg)
 
         elif pred_action == 'b':
-
-            if self.prev_action == 'b':
-                self.get_logger().info('Repeated "b" action !!!')
             
-            elif not self.action_manager.is_action_running('reply'):
+            if not self.action_manager.is_action_running('reply'):
 
                 msg = String()
                 msg.data = "<Robot started reply action> Robot decides to reply to user."
@@ -224,6 +221,8 @@ class ActionController(Node):
                 # NOTE: done ==> 'Send goal' is done (not action complete)
                 self.reply_action_send_goal_future.add_done_callback(
                     self.reply_action_response_callback)
+            else:
+                self.get_logger().info('Reply action already running. Ignore')
 
         else:
             self.get_logger().error(

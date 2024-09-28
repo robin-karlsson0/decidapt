@@ -30,7 +30,7 @@ class ActionDecisionActionServer(Node):
         self._action_client = ActionClient(self, LLM, llm_action_server_name)
 
         # All valid actions represented by a single token output
-        self.max_tokens = 10
+        self.max_tokens = 1
         self.do_nothing_action = 'a'
 
     async def execute_callback(self, goal_handle):
