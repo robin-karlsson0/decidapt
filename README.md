@@ -31,7 +31,7 @@ colcon build
 
 source install/setup.bash
 
-ros2 run robot_action_controller action_decision
+ros2 run robot_action_controller action_decision --ros-args -p llm_action_server:=llm_action_server_ad_8b_action
 ```
 
 
@@ -42,3 +42,5 @@ ros2 run robot_action_controller action_decision
 # robot_action_decision
 
 Service for predicting the optimal action to take based on the current state.
+
+The created action service is named `llm_action_server_ad_8b_action` + `_action`.

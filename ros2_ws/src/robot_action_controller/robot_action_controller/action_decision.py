@@ -24,10 +24,13 @@ class ActionDecisionActionServer(Node):
             execute_callback=self.execute_callback,
         )
 
-        self._action_client = ActionClient(self, LLM, 'llm_action_server')
+        self.declare_parameter(
+            'llm_action_server', 'llm_action_server_ad_8b_action')
+        llm_action_server_name = self.get_parameter('llm_action_server').value
+        self._action_client = ActionClient(self, LLM, llm_action_server_name)
 
         # All valid actions represented by a single token output
-        self.max_tokens = 10
+        self.max_tokens = 1
         self.do_nothing_action = 'a'
 
     async def execute_callback(self, goal_handle):
@@ -41,6 +44,10 @@ class ActionDecisionActionServer(Node):
 
         system_msg = system_msg_pt()
         user_msg = action_decision_pt(state)
+
+        with open('/tmp/action_decision_prompt.txt', 'w') as f:
+            prompt = 'SYSTEM_MSG:\n' + system_msg + '\n\nUSER_MSG:\n' + user_msg
+            f.write(prompt)
 
         llm_goal = LLM.Goal()
         llm_goal.system_prompt = system_msg
@@ -67,7 +74,7 @@ class ActionDecisionActionServer(Node):
         result.pred_action = llm_result_msg.response
 
         goal_handle.succeed()
-        self.get_logger().info(f'Return response: {result}')
+        self.get_logger().info(f"Return '{result.pred_action}'")
 
         return result
 
