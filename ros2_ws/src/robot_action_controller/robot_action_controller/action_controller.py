@@ -6,6 +6,7 @@ from robot_reply_interfaces.action import ReplyAction
 from robot_state_interfaces.srv import State
 from std_msgs.msg import String
 
+
 class ActionManager:
     '''
     Allows running multiple actions of different names in parallel.
@@ -70,10 +71,10 @@ class ActionController(Node):
         #################################
         self.state_client = self.create_client(State, 'get_state')
         while not self.state_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('\'state_client\' service not available, waiting again...')
+            self.get_logger().info(
+                '\'state_client\' service not available, waiting again...')
 
         self.state_req = State.Request()
-
 
         ####################
         #  Action servers
@@ -136,7 +137,19 @@ class ActionController(Node):
 
         # State of current action cycle
         self.current_state = state
-        self.current_state_chunks = self.extract_state_chunks(self.current_state)
+        self.current_visual_info = self.extract_state_part(
+            self.current_state, 'visual_information')
+        self.current_state_chunks = self.extract_state_part(
+            self.current_state, 'state_chunks', exclude_tag=True)
+
+        # Add visual information to state chunk:
+        # <visual_information>
+        # ...
+        # </visual_informmation>
+        #
+        # State chunk 1
+        # ...
+        self.current_state_chunks = self.current_visual_info + '\n\n' + self.current_state_chunks
 
         # Create action decision goal
         ac_goal = ActionDecision.Goal()
@@ -203,7 +216,7 @@ class ActionController(Node):
             self.action_dec_pub.publish(msg)
 
         elif pred_action == 'b':
-            
+
             if not self.action_manager.is_action_running('reply'):
 
                 msg = String()
@@ -238,11 +251,11 @@ class ActionController(Node):
             self.get_logger().info('\'Reply\' action goal rejected')
             self.action_manager.complete_action('reply')
             return
-        
+
         self.get_reply_result_future = goal_handle.get_result_async()
         self.get_reply_result_future.add_done_callback(
             self.reply_action_completed_callback)
-        
+
     def reply_action_completed_callback(self, future):
         '''
         '''
@@ -250,29 +263,45 @@ class ActionController(Node):
         self.get_logger().info('\'Reply\' action completed')
 
     @staticmethod
-    def extract_state_chunks(state: str) -> str:
-        ''' Returns a substring representing the state chunks.
+    def extract_state_part(
+            state: str,
+            tag: str,
+            exclude_tag: bool = False,
+            ) -> str:
+        '''
+        Returns a substring representing part of state inside a tag like
+            <state_chunks>
+            ...
+            </state_chunks>.
+
+        Args:
+            state: Full state.
+            tag: Extract part of state within a tag (ex: state_chunks)
         '''
         # Split the text into lines
         lines = state.split('\n')
-        
-        # Find the indices of the last pair of <state_chunks> and </state_chunks> tags
+
+        # Find the indices of the last pair of <tag> and </tag> tags
         start_index = -1
         end_index = -1
-        
+
         for i, line in enumerate(lines):
-            if line.strip() == '<state_chunks>':
+            if line.strip() == f'<{tag}>':
                 start_index = i
-            elif line.strip() == '</state_chunks>':
+            elif line.strip() == f'</{tag}>':
                 end_index = i
-        
+
+        if exclude_tag:
+            start_index += 1
+            end_index -= 1
+
         # If we found both tags
         if start_index != -1 and end_index != -1 and start_index < end_index:
             # Extract the content between the tags, including the tags themselves
-            chunk = '\n'.join(lines[start_index+1:end_index])
+            chunk = '\n'.join(lines[start_index:end_index+1])
             return chunk.strip()
         else:
-            return "No valid state chunks found"
+            return f"No valid {tag} found"
 
 def main(args=None):
     rclpy.init(args=args)
