@@ -29,8 +29,15 @@ class ActionDecisionActionServer(Node):
         llm_action_server_name = self.get_parameter('llm_action_server').value
         self._action_client = ActionClient(self, LLM, llm_action_server_name)
 
+        # LLM inference params
+        self.declare_parameter('max_tokens', 1)
+        self.declare_parameter('llm_temp', 0.0)
+        self.declare_parameter('llm_seed', 14)
+        self.max_tokens = self.get_parameter('max_tokens').value
+        self.llm_temp = self.get_parameter('llm_temp').value
+        self.llm_seed = self.get_parameter('llm_seed').value
+
         # All valid actions represented by a single token output
-        self.max_tokens = 1
         self.do_nothing_action = 'a'
 
     async def execute_callback(self, goal_handle):
@@ -53,6 +60,8 @@ class ActionDecisionActionServer(Node):
         llm_goal.system_prompt = system_msg
         llm_goal.prompt = user_msg
         llm_goal.max_tokens = self.max_tokens
+        llm_goal.temp = self.llm_temp
+        llm_goal.seed = self.llm_seed
 
         # (1) Send goal asynchronously
         send_goal_future = await self._action_client.send_goal_async(llm_goal)
