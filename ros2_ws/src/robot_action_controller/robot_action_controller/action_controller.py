@@ -1,10 +1,12 @@
+import textwrap
+
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from robot_action_interfaces.action import ActionDecision
 from robot_reply_interfaces.action import ReplyAction
 from robot_state_interfaces.srv import State
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 
 class ActionManager:
@@ -113,6 +115,13 @@ class ActionController(Node):
             'b': 'reply',
         }
 
+        #############################
+        #  Robot state information
+        #############################
+        self.create_subscription(
+            Bool, '/tts_is_speaking', self.tts_is_speaking_callback, 10)
+        self.state_is_speaking = False
+
     def run_action_cycle(self):
         '''
         Runs an action cycle represented by a sequence of callback functions.
@@ -141,6 +150,7 @@ class ActionController(Node):
             self.current_state, 'visual_information')
         self.current_state_chunks = self.extract_state_part(
             self.current_state, 'state_chunks', exclude_tag=True)
+        self.current_robot_state = self.get_robot_state()
 
         # Add visual information to state chunk:
         # <visual_information>
@@ -149,7 +159,12 @@ class ActionController(Node):
         #
         # State chunk 1
         # ...
-        self.current_state_chunks = self.current_visual_info + '\n\n' + self.current_state_chunks
+        self.current_state_chunks = \
+            self.current_visual_info + \
+            '\n\n' + \
+            self.current_state_chunks + \
+            '\n\n' + \
+            self.current_robot_state
 
         # Create action decision goal
         ac_goal = ActionDecision.Goal()
@@ -217,6 +232,9 @@ class ActionController(Node):
 
         elif pred_action == 'b':
 
+            if self.state_is_speaking:
+                self.get_logger().info('Robot still speaking. Ignore')
+
             if not self.action_manager.is_action_running('reply'):
 
                 msg = String()
@@ -261,6 +279,24 @@ class ActionController(Node):
         '''
         self.action_manager.complete_action('reply')
         self.get_logger().info('\'Reply\' action completed')
+
+    def tts_is_speaking_callback(self, msg):
+        '''
+        Read robot 'is_speaking' robot state.
+        '''
+        self.state_is_speaking = msg.data
+
+    def get_robot_state(self):
+        '''
+        Returns a string representing robots state including ongoing actions.
+        '''
+        robot_state = textwrap.dedent('''
+            <robot_state>
+            Robot is speaking: {}
+            </robot_state>
+        ''')
+        robot_state = robot_state.format(self.state_is_speaking)
+        return robot_state
 
     @staticmethod
     def extract_state_part(
