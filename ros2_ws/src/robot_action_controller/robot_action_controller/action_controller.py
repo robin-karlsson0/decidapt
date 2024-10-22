@@ -66,7 +66,9 @@ class ActionController(Node):
         super().__init__('action_manager')
 
         self.declare_parameter('ac_loop_freq', 1.0)
+        self.declare_parameter('num_short_chunks', 20)
         self.ac_loop_freq = float(self.get_parameter('ac_loop_freq').value)
+        self.num_short_chunks = self.get_parameter('num_short_chunks').value
 
         #################################
         #  Service clients
@@ -160,15 +162,26 @@ class ActionController(Node):
         # State chunk 1
         # ...
         self.current_state_chunks = \
-            self.current_visual_info + \
-            '\n\n' + \
             self.current_state_chunks + \
             '\n\n' + \
+            self.current_visual_info + \
+            '\n' + \
             self.current_robot_state
 
-        # Create action decision goal
+        short_state_chunks = self.extract_state_part(
+            self.current_state, 'state_chunks', exclude_tag=True)
+        short_state_chunks = self.extract_state_chunks(
+            short_state_chunks, self.num_short_chunks)
+        short_state_chunks = \
+            short_state_chunks + \
+            '\n\n' + \
+            self.current_visual_info + \
+            '\n' + \
+            self.current_robot_state
+
+        # Create action decision goal (w. shortened state)
         ac_goal = ActionDecision.Goal()
-        ac_goal.state = self.current_state_chunks
+        ac_goal.state = short_state_chunks
 
         self._ac_action_client.wait_for_server()
         self.send_ac_goal_future = self._ac_action_client.send_goal_async(
@@ -338,6 +351,37 @@ class ActionController(Node):
             return chunk.strip()
         else:
             return f"No valid {tag} found"
+
+    @staticmethod
+    def extract_state_chunks(state_chunks: str, num: int) -> str:
+        '''
+        Returns the N bottom / most recent state chunks.
+
+        Args:
+            state_chunks: Sequence of state information chunks formatted as:
+                topic: /asr
+                ts: 2024-08-31 17:45:23
+                data: <Robot heard voice> User says: Hey robot, I'm heading ...
+                ---
+                topic: /action_response
+                ts: 2024-08-31 17:45:25
+                data: <Robot completed reply action> Robot says: Certainly! ...
+                ---
+            num: Number of chunks to extract counting from the bottom.
+        '''
+        # Split the input string into chunks
+        chunks = state_chunks.strip().split('---')
+
+        # Remove any empty chunks
+        chunks = [chunk.strip() for chunk in chunks if chunk.strip()]
+
+        # Get the N bottom chunks
+        bottom_chunks = chunks[-num:]
+
+        # Join the chunks back together with the separator
+        result = '\n---\n'.join(bottom_chunks) + '\n---'
+
+        return result
 
 def main(args=None):
     rclpy.init(args=args)
