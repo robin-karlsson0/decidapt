@@ -64,10 +64,6 @@ class ActionDecisionActionServer(Node):
         system_msg = system_msg_pt()
         user_msg = action_decision_pt(state)
 
-        with open('/tmp/action_decision_prompt.txt', 'w') as f:
-            prompt = 'SYSTEM_MSG:\n' + system_msg + '\n\nUSER_MSG:\n' + user_msg
-            f.write(prompt)
-
         t0 = time.time()
 
         output = self.client.chat.completions.create(
@@ -110,10 +106,6 @@ class ActionDecisionActionServer(Node):
 
         system_msg = system_msg_pt()
         user_msg = action_decision_pt(state)
-
-        with open('/tmp/action_decision_prompt.txt', 'w') as f:
-            prompt = 'SYSTEM_MSG:\n' + system_msg + '\n\nUSER_MSG:\n' + user_msg
-            f.write(prompt)
 
         llm_goal = LLM.Goal()
         llm_goal.system_prompt = system_msg
