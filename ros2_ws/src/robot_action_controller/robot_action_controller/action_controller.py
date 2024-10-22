@@ -245,11 +245,9 @@ class ActionController(Node):
 
         elif pred_action == 'b':
 
-            if self.state_is_speaking:
-                self.get_logger().info('Robot still speaking. Ignore')
-
-            if not self.action_manager.is_action_running('reply'):
-
+            if self.state_is_speaking or self.action_manager.is_action_running('reply'):
+                self.get_logger().info('Reply action already running. Ignore')
+            else:
                 msg = String()
                 msg.data = "<Robot started reply action> Robot decides to reply to user."
                 self.action_dec_pub.publish(msg)
@@ -265,8 +263,6 @@ class ActionController(Node):
                 # NOTE: done ==> 'Send goal' is done (not action complete)
                 self.reply_action_send_goal_future.add_done_callback(
                     self.reply_action_response_callback)
-            else:
-                self.get_logger().info('Reply action already running. Ignore')
 
         else:
             self.get_logger().error(
