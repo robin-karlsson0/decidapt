@@ -124,6 +124,13 @@ class ActionController(Node):
             Bool, '/tts_is_speaking', self.tts_is_speaking_callback, 10)
         self.state_is_speaking = False
 
+        ##################
+        #  Chatbot mode
+        ##################
+        self.declare_parameter('chatbot_mode', True)
+        self.chatbot_mode = self.get_parameter('chatbot_mode').value
+        self.chatbot_action = 'a'
+
     def run_action_cycle(self):
         '''
         Runs an action cycle represented by a sequence of callback functions.
@@ -153,6 +160,19 @@ class ActionController(Node):
         self.current_state_chunks = self.extract_state_part(
             self.current_state, 'state_chunks', exclude_tag=True)
         self.current_robot_state = self.get_robot_state()
+
+        # Chatbot mode
+        # Automatically select 'reply' action if last state is /asr
+        if self.chatbot_mode:
+            last_state_chunk = self.extract_state_chunks(
+                self.current_state_chunks, 1)
+            # TMP
+            # with open('/tmp/chatbot_state_chunk.txt', 'w') as f:
+            #     f.write(last_state_chunk)
+            if 'topic: /asr' in last_state_chunk:
+                self.chatbot_action = 'b'
+            else:
+                self.chatbot_action = 'a'
 
         # Add visual information to state chunk:
         # <visual_information>
@@ -223,6 +243,14 @@ class ActionController(Node):
         # 5. Callback chain terminates
 
         # Get first character out of a potential sequence
+
+        ########################
+        #  NOTE: Chatbot mode
+        ########################
+        if self.chatbot_mode:
+            self.get_logger().info(f'CHATBOT MODE: {self.chatbot_action}')
+            pred_action = self.chatbot_action
+
         if len(pred_action) > 0:
             pred_action = pred_action[0]
 
