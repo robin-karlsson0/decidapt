@@ -142,9 +142,9 @@ class ActionDecisionActionServer(Node):
         self.get_logger().info(f"Return '{result.pred_action}' ({dt:.2f} s)")
 
         # Log prompt and result to file
-        ts = self.str_time()
-        with open(f'/tmp/{ts}_prompt_ad.txt', 'a') as f:
-            f.write(self.log_str(system_msg, user_msg, result.pred_action))
+        # ts = self.str_time()
+        # with open(f'/tmp/{ts}_prompt_ad.txt', 'a') as f:
+        #     f.write(self.log_str(system_msg, user_msg, result.pred_action))
 
         return result
 
