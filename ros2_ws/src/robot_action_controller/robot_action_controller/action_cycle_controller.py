@@ -58,7 +58,7 @@ class ActionManager:
             del self.running_actions[action_name]
 
 
-class ActionController(Node):
+class ActionCycleController(Node):
     '''
     '''
 
@@ -410,7 +410,7 @@ class ActionController(Node):
 def main(args=None):
     rclpy.init(args=args)
 
-    state_client = ActionController()
+    state_client = ActionCycleController()
     state_client.get_logger().info('Action controller is running...')
     rclpy.spin(state_client)
 
