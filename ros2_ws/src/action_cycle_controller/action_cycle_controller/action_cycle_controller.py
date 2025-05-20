@@ -3,9 +3,8 @@ import textwrap
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from robot_action_interfaces.action import ActionDecision
-from robot_reply_interfaces.action import ReplyAction
-from robot_state_interfaces.srv import State
+from exodapt_robot_interfaces.action import ActionDecision, ActionReply, LLM
+from exodapt_robot_interfaces.srv import State
 from std_msgs.msg import Bool, String
 
 
@@ -86,7 +85,7 @@ class ActionCycleController(Node):
         self._ac_action_client = ActionClient(self, ActionDecision,
                                               'action_decision_action_server')
 
-        self._reply_action_client = ActionClient(self, ReplyAction,
+        self._reply_action_client = ActionClient(self, ActionReply,
                                                  'reply_action_server')
 
         # Action decision publisher
@@ -281,7 +280,7 @@ class ActionCycleController(Node):
                 self.action_dec_pub.publish(msg)
 
                 # self.get_logger().info('Executing action b')
-                goal = ReplyAction.Goal()
+                goal = ActionReply.Goal()
                 goal.state = self.current_state_chunks
                 self.reply_action_send_goal_future = self.action_manager.start_action(
                     'reply',

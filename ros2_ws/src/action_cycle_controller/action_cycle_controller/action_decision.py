@@ -4,11 +4,11 @@ import time
 
 import rclpy
 from huggingface_hub import InferenceClient
-from llm_action_interfaces.action import LLM
+from exodapt_robot_interfaces.action import LLM
 from rclpy.action import ActionClient, ActionServer
 from rclpy.node import Node
-from robot_action_interfaces.action import ActionDecision
-from robot_pt import action_decision_pt, system_msg_pt
+from exodapt_robot_interfaces.action import ActionDecision
+# from robot_pt import action_decision_pt, system_msg_pt
 
 
 class ActionDecisionActionServer(Node):

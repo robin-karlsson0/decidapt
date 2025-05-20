@@ -13,10 +13,7 @@ setup(
     ],
     install_requires=[
         'setuptools',
-        'llm_action_interfaces',
-        'robot_reply_interfaces',
-        'action_interfaces',
-        'mol-robot-prompt-templates',
+        'exodapt_robot_interfaces',
     ],
     zip_safe=True,
     maintainer='robin',

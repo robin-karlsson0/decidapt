@@ -1,0 +1,6 @@
+repositories:
+  exodapt_robot_interfaces:
+    type: git
+    url: https://github.com/robin-karlsson0/exodapt_robot_interfaces.git
+    version: main
+    path: ros2_ws/src/exodapt_robot_interfaces
