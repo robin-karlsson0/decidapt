@@ -1,10 +1,10 @@
 import textwrap
 
 import rclpy
+from exodapt_robot_interfaces.action import LLM, ActionDecision, ActionReply
+from exodapt_robot_interfaces.srv import State
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from exodapt_robot_interfaces.action import ActionDecision, ActionReply, LLM
-from exodapt_robot_interfaces.srv import State
 from std_msgs.msg import Bool, String
 
 
@@ -15,15 +15,16 @@ class ActionManager:
     Dictionary 'running_actions' keep track of running actions by name:
         running_actions[action_name] --> action_client
     '''
+
     def __init__(self):
         self.running_actions = {}
 
     def start_action(
-            self,
-            action_name: str,
-            action_client: ActionClient,
-            goal,
-            ) -> ActionClient:
+        self,
+        action_name: str,
+        action_client: ActionClient,
+        goal,
+    ) -> ActionClient:
         '''
         Adds ROS 2 Action Client object to set of running actions and returns
         the Action Goal's future callback function.
@@ -119,8 +120,8 @@ class ActionCycleController(Node):
         #############################
         #  Robot state information
         #############################
-        self.create_subscription(
-            Bool, '/tts_is_speaking', self.tts_is_speaking_callback, 10)
+        self.create_subscription(Bool, '/tts_is_speaking',
+                                 self.tts_is_speaking_callback, 10)
         self.state_is_speaking = False
 
         ##################
@@ -156,8 +157,9 @@ class ActionCycleController(Node):
         self.current_state = state
         self.current_visual_info = self.extract_state_part(
             self.current_state, 'visual_information')
-        self.current_state_chunks = self.extract_state_part(
-            self.current_state, 'state_chunks', exclude_tag=True)
+        self.current_state_chunks = self.extract_state_part(self.current_state,
+                                                            'state_chunks',
+                                                            exclude_tag=True)
         self.current_robot_state = self.get_robot_state()
 
         # Chatbot mode
@@ -187,10 +189,11 @@ class ActionCycleController(Node):
             '\n' + \
             self.current_robot_state
 
-        short_state_chunks = self.extract_state_part(
-            self.current_state, 'state_chunks', exclude_tag=True)
-        short_state_chunks = self.extract_state_chunks(
-            short_state_chunks, self.num_short_chunks)
+        short_state_chunks = self.extract_state_part(self.current_state,
+                                                     'state_chunks',
+                                                     exclude_tag=True)
+        short_state_chunks = self.extract_state_chunks(short_state_chunks,
+                                                       self.num_short_chunks)
         short_state_chunks = \
             short_state_chunks + \
             '\n\n' + \
@@ -272,7 +275,8 @@ class ActionCycleController(Node):
 
         elif pred_action == 'b':
 
-            if self.state_is_speaking or self.action_manager.is_action_running('reply'):
+            if self.state_is_speaking or self.action_manager.is_action_running(
+                    'reply'):
                 self.get_logger().info('Reply action already running. Ignore')
             else:
                 msg = String()
@@ -336,10 +340,10 @@ class ActionCycleController(Node):
 
     @staticmethod
     def extract_state_part(
-            state: str,
-            tag: str,
-            exclude_tag: bool = False,
-            ) -> str:
+        state: str,
+        tag: str,
+        exclude_tag: bool = False,
+    ) -> str:
         '''
         Returns a substring representing part of state inside a tag like
             <state_chunks>
@@ -370,7 +374,7 @@ class ActionCycleController(Node):
         # If we found both tags
         if start_index != -1 and end_index != -1 and start_index < end_index:
             # Extract the content between the tags, including the tags themselves
-            chunk = '\n'.join(lines[start_index:end_index+1])
+            chunk = '\n'.join(lines[start_index:end_index + 1])
             return chunk.strip()
         else:
             return f"No valid {tag} found"
@@ -405,6 +409,7 @@ class ActionCycleController(Node):
         result = '\n---\n'.join(bottom_chunks) + '\n---'
 
         return result
+
 
 def main(args=None):
     rclpy.init(args=args)

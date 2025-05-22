@@ -1,0 +1,235 @@
+import threading
+import time
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Any, Callable
+
+from action_msgs.msg import GoalStatus
+from rclpy.action import ActionClient
+
+
+@dataclass
+class ActionClientConfig:
+    """Object representing an action type."""
+
+    client: ActionClient
+    timeout: float
+    max_concurrent: int
+
+
+@dataclass
+class ActionState:
+    """Object representing the ongoing execution of an action."""
+
+    name: str
+    goal: Any
+    callback: Callable
+    timeout: float
+    future: Any = field(default=None)
+    goal_handle: Any = field(default=None)
+
+
+class ActionResult(StrEnum):
+    """Enumeration of posible action result cases."""
+
+    SUBMITTED = 'submitted'
+    SUCCESS = 'success'
+    FAILED = 'failed'
+    CANCELLED = 'cancelled'
+    REJECTED = 'rejected'
+    INVALID = 'invalid'
+
+
+class ActionManager:
+    """ActionManager handles action clients and their states.
+
+    Allows running actions in parallel with a limit on actions of the same type.
+
+    ActionState: A record of a particular action execution.
+    """
+
+    def __init__(self, node):
+        self.node = node
+        self.action_registry = {}  # action_name -> ActionClientConfig
+        self.running_actions = {}  # action_name -> ActionState
+        self.lock = threading.Lock()
+
+    def register_action(
+        self,
+        name,
+        action_type,
+        timeout=60.0,
+        max_concurrent=1,
+    ):
+        """Register action with metadata."""
+        config = ActionClientConfig(
+            client=ActionClient(self.node, action_type, name),
+            timeout=timeout,
+            max_concurrent=max_concurrent,
+        )
+        self.action_registry[name] = config
+
+    def submit_action(self, action_name, goal, callback=None):
+        """Queue and execute action with validation.
+
+        Prepares a valid action for execution with an ActionState object to
+        track the action's state.
+
+        Thread lock prevents concurrent operations to create race conditions.
+        A thread will wait for the lock to be released before proceeding.
+
+        Args:
+            action_name (str): Name of the action to execute.
+            goal (object): Goal message for the action.
+            callback (function): Optional callback function to handle result.
+        """
+        with self.lock:
+            if not self._validate_action(action_name):
+                return ActionResult.INVALID
+
+            # TODO: Handle N concurrent actions
+            if self.is_running(action_name):
+                self.cancel_action(action_name)
+
+            # Stores particular action state
+            expiry_t = time.time() + self.action_registry[action_name].timeout
+            state = ActionState(
+                name=action_name,
+                goal=goal,
+                callback=callback,
+                timeout=expiry_t,
+            )
+            self.running_actions[action_name] = state
+
+        # Execute action
+        return self._execute_action(state)
+
+    def _execute_action(self, state: ActionState) -> ActionResult:
+        """Execute action with error handling.
+
+        Args:
+            state: Action state object
+
+        Returns:
+            ActionResult: Resulting state of action execution.
+        """
+        try:
+            # Unpack ActionClient for current action
+            client_config = self.action_registry[state.name]
+            client = client_config.client
+
+            # Asynchronously execute action through ActionClient
+            future = client.send_goal_async(state.goal)
+
+            # Attach a callback to handle goal acceptance/rejection.
+            # NOTE: The callback receives the future object as its argument
+            #       (here named 'f'). A lambda is used to pass both 'state.name'
+            #       and the future to the _handle_goal_response method,
+            #       since add_done_callback only passes the future by default.
+            future.add_done_callback(
+                lambda f: self._handle_goal_response(state.name, f))
+            state.future = future
+            return ActionResult.SUBMITTED
+
+        except Exception as e:
+            self._complete_action(state.name, ActionResult.FAILED, str(e))
+            return ActionResult.FAILED
+
+    def _handle_goal_response(self, action_name, future):
+        """Handle goal acceptance/rejection."""
+        try:
+            goal_handle = future.result()
+            # ADD THIS LINE:
+            if action_name in self.running_actions:
+                self.running_actions[action_name].goal_handle = goal_handle
+
+            if goal_handle.accepted:
+                result_future = goal_handle.get_result_async()
+                result_future.add_done_callback(
+                    lambda f: self._handle_result(action_name, f))
+            else:
+                self._complete_action(action_name, ActionResult.REJECTED)
+        except Exception as e:
+            self._complete_action(action_name, ActionResult.FAILED, str(e))
+
+    def _handle_result(self, action_name, future):
+        """Handle action completion."""
+        try:
+            result = future.result()
+            if result.status == GoalStatus.STATUS_SUCCEEDED:
+                status = ActionResult.SUCCESS
+            else:
+                status = ActionResult.FAILED
+            self._complete_action(action_name, status, result)
+        except Exception as e:
+            self._complete_action(action_name, ActionResult.FAILED, str(e))
+
+    def cancel_action(self, action_name):
+        """Cancel running action."""
+        with self.lock:
+            if action_name not in self.running_actions:
+                return False
+
+            state = self.running_actions[action_name]
+            if hasattr(state, 'goal_handle') and state.goal_handle:
+                state.goal_handle.cancel_goal_async()
+            elif state.future:
+                state.future.cancel()
+
+            self._complete_action(action_name, ActionResult.CANCELLED)
+            return True
+
+    def _complete_action(self, action_name, result, data=None):
+        """Clean up and notify completion."""
+        with self.lock:
+            if action_name not in self.running_actions:
+                return
+
+            state = self.running_actions[action_name]
+            del self.running_actions[action_name]
+
+        # Execute callback outside lock
+        if state.callback:
+            try:
+                state.callback(action_name, result, data)
+            except Exception as e:
+                self.node.get_logger().error(
+                    f"Callback error for {action_name}: {e}")
+
+    def _validate_action(self, action_name):
+        """Validate action can be executed."""
+        if action_name not in self.action_registry:
+            return False
+
+        config = self.action_registry[action_name]
+        running_count = sum(1 for s in self.running_actions.values()
+                            if s.name == action_name)
+
+        return running_count < config.max_concurrent
+
+    def is_running(self, action_name):
+        """Check if existing action should be cancelled."""
+        return action_name in self.running_actions
+
+    def get_running_actions(self):
+        """Get list of currently running actions."""
+        with self.lock:
+            return list(self.running_actions.keys())
+
+    def is_action_running(self, action_name):
+        """Check if specific action is running."""
+        with self.lock:
+            return action_name in self.running_actions
+
+    def cleanup_timeouts(self):
+        """Remove timed out actions (call periodically)."""
+        current_time = time.time()
+        expired = []
+
+        with self.lock:
+            for name, state in self.running_actions.items():
+                if current_time > state.timeout:
+                    expired.append(name)
+
+        for name in expired:
+            self.cancel_action(name)
