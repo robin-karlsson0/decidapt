@@ -41,14 +41,74 @@ class ActionResult(StrEnum):
 
 
 class ActionManager:
-    """ActionManager handles action clients and their states.
+    """Thread-safe manager for executing multiple ROS 2 actions in parallel.
 
-    Allows running actions in parallel with a limit on actions of the same type.
+    Provides registration, execution, cancellation, and monitoring of actions
+    with automatic timeout handling, error recovery, and completion callbacks.
 
-    ActionState: A record of a particular action execution.
+    Usage:
+        1. Create manager with ROS 2 node:
+            manager = ActionManager(node)
+        2. Register actions:
+            manager.register_action("move", MoveAction, timeout=30.0)
+        3. Submit actions:
+            manager.submit_action("move", goal, callback_func)
+        4. Monitor:
+            manager.is_action_running("move")
+        5. Cancel:
+            manager.cancel_action("move")
+        6. Cleanup timeouts periodically:
+            manager.cleanup_timeouts()
+
+    Features:
+        - Concurrent execution with configurable limits per action type
+        - Automatic cleanup of completed/failed/cancelled actions
+        - Thread-safe operations for multi-threaded environments
+        - Timeout enforcement with periodic cleanup
+        - Callback system for completion notifications
+        - Error handling with graceful degradation
+
+    Managed objects:
+        - ActionClientConfig: Configuration for each action type.
+        - ActionState: A record of a particular action execution.
+
+    Async chain:
+
+        _execute_action:
+            Async call (1):   client.send_goal_async(goal) --> goal_future
+                              goal_future.add_done_callback()
+
+        _handle_goal_response:
+            Async result (1): goal_future.result() --> goal_handle
+            Async call (2):   goal_handle.get_result_async() --> result_future
+                              result_future.add_done_callback()
+
+        _handle_result:
+            Async result (2) result_future.result() --> result
+
+    Async objects:
+            - goal_future
+            - goal_handle
+            - result_future
+            - result
+
+    Results:
+        - invalid: Action not registered or capacity exceeded
     """
 
     def __init__(self, node):
+        """Initialize ActionManager with ROS 2 node.
+
+        Args:
+            node: ROS 2 node instance for creating ActionClient objects
+                NOTE: The node is needed for providing ROS 2 communication
+                infrastructure to ActionClient instances.
+
+        Note:
+            Actions must be registered before use via register_action().
+            Call cleanup_timeouts() periodically (e.g., in timer callback)
+            to handle expired actions.
+        """
         self.node = node
         self.action_registry = {}  # action_name -> ActionClientConfig
         self.running_actions = {}  # action_name -> ActionState
@@ -69,7 +129,7 @@ class ActionManager:
         )
         self.action_registry[name] = config
 
-    def submit_action(self, action_name, goal, callback=None):
+    def submit_action(self, action_name, goal, callback=None) -> ActionResult:
         """Queue and execute action with validation.
 
         Prepares a valid action for execution with an ActionState object to
@@ -82,8 +142,12 @@ class ActionManager:
             action_name (str): Name of the action to execute.
             goal (object): Goal message for the action.
             callback (function): Optional callback function to handle result.
+
+        Returns:
+            ActionResult: Resulting state of action execution.
         """
         with self.lock:
+            # Catches 1) invalid action names and 2) capacity exceeded
             if not self._validate_action(action_name):
                 return ActionResult.INVALID
 
@@ -119,26 +183,26 @@ class ActionManager:
             client = client_config.client
 
             # Asynchronously execute action through ActionClient
-            future = client.send_goal_async(state.goal)
+            goal_future = client.send_goal_async(state.goal)
 
             # Attach a callback to handle goal acceptance/rejection.
             # NOTE: The callback receives the future object as its argument
             #       (here named 'f'). A lambda is used to pass both 'state.name'
             #       and the future to the _handle_goal_response method,
             #       since add_done_callback only passes the future by default.
-            future.add_done_callback(
+            goal_future.add_done_callback(
                 lambda f: self._handle_goal_response(state.name, f))
-            state.future = future
+            state.future = goal_future
             return ActionResult.SUBMITTED
 
         except Exception as e:
             self._complete_action(state.name, ActionResult.FAILED, str(e))
             return ActionResult.FAILED
 
-    def _handle_goal_response(self, action_name, future):
+    def _handle_goal_response(self, action_name, goal_future):
         """Handle goal acceptance/rejection."""
         try:
-            goal_handle = future.result()
+            goal_handle = goal_future.result()
             # ADD THIS LINE:
             if action_name in self.running_actions:
                 self.running_actions[action_name].goal_handle = goal_handle
@@ -152,10 +216,10 @@ class ActionManager:
         except Exception as e:
             self._complete_action(action_name, ActionResult.FAILED, str(e))
 
-    def _handle_result(self, action_name, future):
+    def _handle_result(self, action_name, result_future):
         """Handle action completion."""
         try:
-            result = future.result()
+            result = result_future.result()
             if result.status == GoalStatus.STATUS_SUCCEEDED:
                 status = ActionResult.SUCCESS
             else:
