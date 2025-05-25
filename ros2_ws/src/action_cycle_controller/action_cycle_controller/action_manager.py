@@ -35,7 +35,7 @@ class ActionResult(StrEnum):
     SUBMITTED = 'submitted'
     SUCCESS = 'success'
     FAILED = 'failed'
-    CANCELLED = 'cancelled'
+    CANCELED = 'canceled'
     REJECTED = 'rejected'
     INVALID = 'invalid'
 
@@ -62,7 +62,7 @@ class ActionManager:
 
     Features:
         - Concurrent execution with configurable limits per action type
-        - Automatic cleanup of completed/failed/cancelled actions
+        - Automatic cleanup of completed/failed/canceled actions
         - Thread-safe operations for multi-threaded environments
         - Timeout enforcement with periodic cleanup
         - Callback system for completion notifications
@@ -228,20 +228,30 @@ class ActionManager:
         except Exception as e:
             self._complete_action(action_name, ActionResult.FAILED, str(e))
 
-    def cancel_action(self, action_name):
-        """Cancel running action."""
+    def cancel_action(self, action_name) -> bool:
+        """Cancel running action.
+
+        Args:
+            action_name (str): Name of the action to cancel.
+
+        Returns:
+            bool: True if action was canceled, False if not running.
+        """
+        # Get state info while locked
         with self.lock:
             if action_name not in self.running_actions:
                 return False
-
             state = self.running_actions[action_name]
-            if hasattr(state, 'goal_handle') and state.goal_handle:
-                state.goal_handle.cancel_goal_async()
-            elif state.future:
-                state.future.cancel()
 
-            self._complete_action(action_name, ActionResult.CANCELLED)
-            return True
+        # Cancel outside the lock
+        if hasattr(state, 'goal_handle') and state.goal_handle:
+            state.goal_handle.cancel_goal_async()
+        elif state.future:
+            state.future.cancel()
+
+        # Complete the action (this will acquire its own lock)
+        self._complete_action(action_name, ActionResult.CANCELED)
+        return True
 
     def _complete_action(self, action_name, result, data=None):
         """Clean up and notify completion."""
@@ -272,7 +282,7 @@ class ActionManager:
         return running_count < config.max_concurrent
 
     def is_running(self, action_name):
-        """Check if existing action should be cancelled."""
+        """Check if existing action should be canceled."""
         return action_name in self.running_actions
 
     def get_running_actions(self):
