@@ -40,6 +40,11 @@ source decidapt_env/bin/activate
 source /opt/ros/jazzy/setup.bash
 ```
 
+Pull package dependencies
+```
+exodapt_robot_interfaces
+exodapt_robot_pt
+```
 **TODO: Git submodule `exodapt_robot_pt` needs pulling?**
 
 Install python package dependencies
