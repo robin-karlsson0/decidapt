@@ -1,0 +1,7 @@
+[project]
+name = "decidapt"
+version = "0.0.1"
+description = "A proactive decision-making framework for autonomous robots that selects actions based on AI goals, robot state, and environmental context while learning from experience by self-reflection. Built for ROS 2."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
