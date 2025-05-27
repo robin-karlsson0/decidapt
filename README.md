@@ -50,7 +50,6 @@ exodapt_robot_pt
 Install python package dependencies
 ```
 uv pip install -r requirements.txt
-uv pip install -e ros2_ws/src/exodapt_robot_pt 
 ```
 
 Build ROS 2 packages

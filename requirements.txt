@@ -6,3 +6,4 @@ wheel
 pyyaml
 numpy
 transformers
+-e ros2_ws/src/exodapt_robot_pt
