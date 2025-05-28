@@ -1,7 +1,6 @@
 catkin-pkg
 lark
 empy
-setuptools
 wheel
 pyyaml
 numpy
