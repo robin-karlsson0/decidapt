@@ -66,6 +66,7 @@ class StateManager(Node):
         self.declare_parameter('continuous_queue_max_tokens', 2000)
         self.declare_parameter('event_topics', string_array_param)
         self.declare_parameter('continuous_topics', string_array_param)
+        self.declare_parameter('long_term_memory_file_pth', '')
 
         self.event_queue_max_tokens = int(
             self.get_parameter('event_queue_max_tokens').value)
@@ -95,14 +96,21 @@ class StateManager(Node):
         self.state_retr_mem = ''
         self.state_retr_mem_len = 0
 
-        # Dual queue system - now storing (state_chunk, timestamp, token_length) tuples
+        # Queue stores (state_chunk, timestamp, token_length) tuples
         self.event_queue = deque()
         self.continuous_queue = deque()
 
-        # TODO: Long-term memory
-        # self.long_term_memory_file = '/tmp/robot_memory.txt'
-        # with open(self.long_term_memory_file, 'w') as f:
-        #     f.write('')
+        # Long-term memory file initialization
+        ltm_file_pth = self.get_parameter('long_term_memory_file_pth').value
+        if ltm_file_pth:
+            self.long_term_memory_file_pth = ltm_file_pth
+            self.get_logger().info(
+                f'Writing Long-term memory to file: {self.long_term_memory_file_pth}'  # noqa
+            )
+            with open(self.long_term_memory_file_pth, 'w') as f:
+                f.write('')
+        else:
+            self.long_term_memory_file_pth = None
 
         # Create subscribers for both queue types
         self.subscribers = []
@@ -137,7 +145,7 @@ class StateManager(Node):
         msg_ts = self.get_clock().now().to_msg()
         msg_ts_str = datetime.fromtimestamp(
             msg_ts.sec).strftime('%Y-%m-%d %H:%M:%S')
-        timestamp = msg_ts.sec + msg_ts.nanosec * 1e-9  # Convert to float for sorting
+        timestamp = msg_ts.sec + msg_ts.nanosec * 1e-9
 
         state_chunk_str = self.format_state_chunk(topic, msg_ts_str, msg.data)
         token_len = self.token_len(state_chunk_str)
@@ -149,8 +157,9 @@ class StateManager(Node):
         popped_chunks = self._trim_event_queue()
 
         # Write to long-term memory
-        # with open('/tmp/robot_memory.txt', 'a') as f:
-        #     f.write(self.format_state_chunk(topic, msg_ts_str, msg.data))
+        if self.long_term_memory_file_pth:
+            with open(self.long_term_memory_file_pth, 'a') as f:
+                f.write(self.format_state_chunk(topic, msg_ts_str, msg.data))
 
         self._publish_state()
         self.get_logger().info(
@@ -174,8 +183,9 @@ class StateManager(Node):
         popped_chunks = self._trim_continuous_queue()
 
         # Write to long-term memory
-        # with open('/tmp/robot_memory.txt', 'a') as f:
-        #     f.write(self.format_state_chunk(topic, msg_ts_str, msg.data))
+        if self.long_term_memory_file_pth:
+            with open(self.long_term_memory_file_pth, 'a') as f:
+                f.write(self.format_state_chunk(topic, msg_ts_str, msg.data))
 
         self._publish_state()
         self.get_logger().info(
@@ -222,19 +232,6 @@ class StateManager(Node):
 
         return goal_state + state_descr
 
-    def trim_queue(self) -> int:
-        """Trim the queue if it exceeds the maximum token length.
-
-        Returns the number of poppoed chunks.
-        """
-        popped_chunks = 0
-        while sum(self.queue_len) > self.max_token_len:
-            self.queue_len.popleft()
-            self.queue.popleft()
-            popped_chunks += 1
-
-        return popped_chunks
-
     @staticmethod
     def format_state_chunk(topic: str, ts: str, data: str) -> str:
         """Format a state chunk as a string.
@@ -263,9 +260,9 @@ class StateManager(Node):
         state += self.state_retr_mem
         state += '</retrieved_memory>\n\n'
         # Visual information
-        state += '<visual_information>'
-        state += self.get_visual_information()
-        state += '</visual_information>\n\n'
+        # state += '<visual_information>'
+        # state += self.get_visual_information()
+        # state += '</visual_information>\n\n'
 
         # Merge and sort chunks from both queues by timestamp
         all_chunks = []

@@ -14,6 +14,8 @@ setup(
     install_requires=[
         'setuptools',
         'exodapt_robot_interfaces',
+        'exodapt-robot-pt',
+        'transformers>=4.52.3',
     ],
     zip_safe=True,
     maintainer='robin',
