@@ -2,7 +2,9 @@ catkin-pkg
 lark
 empy
 wheel
+setuptools
 pyyaml
 numpy
+pytest
 transformers
 -e ros2_ws/src/exodapt_robot_pt
