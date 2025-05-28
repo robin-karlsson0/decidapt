@@ -56,8 +56,8 @@ class StateManager(Node):
         - LLM based state chunk filter functionality.
     """
 
-    def __init__(self):
-        super().__init__('state_manager')
+    def __init__(self, **kwargs):
+        super().__init__('state_manager', **kwargs)
 
         # Parameters
         string_array_param = Parameter.Type.STRING_ARRAY
@@ -171,7 +171,7 @@ class StateManager(Node):
         msg_ts = self.get_clock().now().to_msg()
         msg_ts_str = datetime.fromtimestamp(
             msg_ts.sec).strftime('%Y-%m-%d %H:%M:%S')
-        timestamp = msg_ts.sec + msg_ts.nanosec * 1e-9  # Convert to float for sorting
+        timestamp = msg_ts.sec + msg_ts.nanosec * 1e-9
 
         state_chunk_str = self.format_state_chunk(topic, msg_ts_str, msg.data)
         token_len = self.token_len(state_chunk_str)
@@ -249,7 +249,7 @@ class StateManager(Node):
         return self.token_len(state)
 
     def get_state(self) -> str:
-        """Return the current state as a string with chunks ordered by timestamp."""
+        """Return the state as a string with chunks ordered by timestamp."""
         state = ''
         # Header
         state += '<state_header>\n'
