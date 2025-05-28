@@ -2,7 +2,10 @@
 source ../decidapt_env/bin/activate
 source /opt/ros/jazzy/setup.bash
 
+# NOTE: Need setuptools for building, but conflict with ROS 2 when running
+uv pip install setuptools
 colcon build --symlink-install
+uv pip uninstall setuptools
 
 source install/setup.bash
 
