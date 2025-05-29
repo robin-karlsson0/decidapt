@@ -74,8 +74,8 @@ class StateManager(Node):
             self.get_parameter('continuous_queue_max_tokens').value)
 
         # LLM tokenizer for measuring state length
-        llm_model_name = self.get_parameter('llm_model_name').value
-        self.tokenizer = AutoTokenizer.from_pretrained(llm_model_name)
+        self.llm_model_name = self.get_parameter('llm_model_name').value
+        self.tokenizer = AutoTokenizer.from_pretrained(self.llm_model_name)
 
         # Topics to store to memory set by input parameters
         # Ex: string_topics_to_mem:="['/topic1', '/topic2', '/topic3']"
@@ -208,7 +208,7 @@ class StateManager(Node):
         popped_chunks = 0
         total_tokens = sum(
             item[2] for item in self.continuous_queue)  # Sum token lengths
-        while total_tokens > self.continuous_queue_max_tokens and self.continuous_queue:
+        while total_tokens > self.continuous_queue_max_tokens and self.continuous_queue:  # noqa
             removed_item = self.continuous_queue.popleft()
             total_tokens -= removed_item[2]
             popped_chunks += 1
