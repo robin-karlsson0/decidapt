@@ -209,8 +209,8 @@ class TestStateManager:
         ##############################
 
         # Start with empty queue
-        assert len(
-            self.state_manager.event_queue) == 0, 'Event queue should be empty'
+        assert len(self.state_manager.event_queue) == 0, \
+            'Event queue should be empty'
 
         # Add messages until we exceed the token limit
         message_count = 0
@@ -232,14 +232,14 @@ class TestStateManager:
         initial_queue_size = len(self.state_manager.event_queue)
         print(f"Event queue size before trimming: {initial_queue_size}")
         print(f"Total tokens in event queue before trimming: {total_tokens}")
-        print(
-            f"Max tokens allowed in event queue: {self.state_manager.event_queue_max_tokens}"  # noqa: E501
-        )
+        print(f"Max tokens allowed in event queue: \
+                {self.state_manager.event_queue_max_tokens}")
 
         # Verify queue is at or near capacity
         current_tokens = sum(item[2]
                              for item in self.state_manager.event_queue)
-        assert current_tokens <= self.state_manager.event_queue_max_tokens, 'Event queue should be at or near capacity'  # noqa: E501
+        assert current_tokens <= self.state_manager.event_queue_max_tokens, \
+            'Event queue should be at or near capacity'
 
         # Add one more message to trigger trimming
         test_message = f'Test ASR message  {message_count}'
@@ -250,7 +250,8 @@ class TestStateManager:
         final_queue_size = len(self.state_manager.event_queue)
 
         # The new message should have removed the oldest message
-        assert final_queue_size == initial_queue_size, 'Event queue should have been trimmed (1)'  # noqa: E501
+        assert final_queue_size == initial_queue_size, \
+            'Event queue should have been trimmed (1)'
 
         # Verify token limit is still respected
         final_tokens = self.get_token_length_from_queue(
@@ -267,14 +268,96 @@ class TestStateManager:
         print(f"Final event queue size after trimming: {final_queue_size}")
 
         # Queue should have been trimmed (fewer items than before)
-        assert final_queue_size <= initial_queue_size, 'Event queue should have been trimmed (2)'  # noqa: E501
+        assert final_queue_size <= initial_queue_size, \
+            'Event queue should have been trimmed (2)'
 
         # Verify token limit is still respected
         final_tokens = self.get_token_length_from_queue(
             self.state_manager.event_queue)
-        assert final_tokens <= self.state_manager.event_queue_max_tokens, 'Event queue token limit should still be respected'  # noqa: E501
+        assert final_tokens <= self.state_manager.event_queue_max_tokens, \
+            'Event queue token limit should still be respected'
 
         # Verify that newest messages are kept (FIFO - oldest removed first)
         if len(self.state_manager.event_queue) > 0:
             last_chunk = self.state_manager.event_queue[-1][0]
-            assert 'Large test ASR message' in last_chunk, "Newest messages should be retained"  # noqa: E501
+            assert 'Large test ASR message' in last_chunk, \
+                "Newest messages should be retained"
+
+        ###################################
+        # Test continuous queue trimming
+        ###################################
+
+        # Start with empty continuous queue
+        assert len(self.state_manager.continuous_queue) == 0, \
+            'Continuous queue should be empty'
+
+        # Add messages until we exceed the token limit
+        message_count = 0
+        total_tokens = 0
+
+        # Keep adding messages until we start trimming
+        while total_tokens < self.state_manager.continuous_queue_max_tokens:
+            test_message = f'Test MLLM message {message_count}'
+            mllm_publisher.publish(String(data=test_message))
+            self.executor.spin_once(timeout_sec=0.1)
+
+            total_tokens += self.state_manager.continuous_queue[-1][2]
+            message_count += 1
+
+            # Safety check to avoid infinite loop
+            if message_count > 50:
+                break
+
+        initial_queue_size = len(self.state_manager.continuous_queue)
+        print(f"Continuous queue size before trimming: {initial_queue_size}")
+        print(
+            f"Total tokens in continuous queue before trimming: {total_tokens}"
+        )
+        print(f"Max tokens allowed in continuous queue: \
+                {self.state_manager.continuous_queue_max_tokens}")
+
+        # Verify queue is at or near capacity
+        current_tokens = self.get_token_length_from_queue(
+            self.state_manager.continuous_queue)
+        assert current_tokens <= self.state_manager.continuous_queue_max_tokens, 'Continuous queue should be at or near capacity'  # noqa: E501
+
+        # Add several more messages to trigger trimming
+        for i in range(5):
+            test_message = f'Large test MLLM message {i} ' * 10
+            mllm_publisher.publish(String(data=test_message))
+            self.executor.spin_once(timeout_sec=0.1)
+
+        # Verify trimming occurred
+        final_queue_size = len(self.state_manager.continuous_queue)
+        print(
+            f"Final continuous queue size after trimming: {final_queue_size}")
+
+        # Queue should have been trimmed
+        assert final_queue_size <= initial_queue_size, \
+            "Continuous queue should have been trimmed"
+
+        # Verify token limit is still respected
+        final_tokens = self.get_token_length_from_queue(
+            self.state_manager.continuous_queue)
+        assert final_tokens <= self.state_manager.continuous_queue_max_tokens, \
+            'Continuous queue token limit should still be respected'
+
+        # Verify that newest messages are kept (FIFO - oldest removed first)
+        if len(self.state_manager.continuous_queue) > 0:
+            last_chunk = self.state_manager.continuous_queue[-1][0]
+            assert 'Large test MLLM message' in last_chunk, \
+                "Newest messages should be retained"
+
+        #################
+        # Test Edge Cases
+        #################
+
+        # Test adding a single message that exceeds the token limit
+        test_message = 'Very very large test ASR message' * int(1e4)
+        asr_publisher.publish(String(data=test_message))
+        self.executor.spin_once(timeout_sec=0.1)
+
+        final_tokens = self.get_token_length_from_queue(
+            self.state_manager.event_queue)
+        assert final_tokens <= self.state_manager.event_queue_max_tokens, \
+            'Event queue token limit should still be respected after very very large message'  # noqa: E501
