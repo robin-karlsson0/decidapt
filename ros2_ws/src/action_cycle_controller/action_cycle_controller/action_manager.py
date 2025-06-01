@@ -92,17 +92,25 @@ class ActionManager:
             - result_future
             - result
 
+    Publishes action-related messages when:
+        1. An action is accepted: _handle_goal_response()
+        1. An action completes: _complete_action()
+
     Results:
         - invalid: Action not registered or capacity exceeded
     """
 
-    def __init__(self, node):
+    def __init__(self, node, action_event_pub=None, action_running_pub=None):
         """Initialize ActionManager with ROS 2 node.
 
         Args:
             node: ROS 2 node instance for creating ActionClient objects
                 NOTE: The node is needed for providing ROS 2 communication
                 infrastructure to ActionClient instances.
+            action_event_pub: Optional ROS publisher for action events like
+                submission, completion, or failure.
+            action_running_pub: Optional ROS publisher for current running
+                actions status.
 
         Note:
             Actions must be registered before use via register_action().
@@ -110,6 +118,8 @@ class ActionManager:
             to handle expired actions.
         """
         self.node = node
+        self.action_event_pub = action_event_pub
+        self.action_running_pub = action_running_pub
         self.action_registry = {}  # action_name -> ActionClientConfig
         self.running_actions = {}  # action_name -> ActionState
         self.lock = threading.Lock()
@@ -203,7 +213,6 @@ class ActionManager:
         """Handle goal acceptance/rejection."""
         try:
             goal_handle = goal_future.result()
-            # ADD THIS LINE:
             if action_name in self.running_actions:
                 self.running_actions[action_name].goal_handle = goal_handle
 
@@ -211,6 +220,11 @@ class ActionManager:
                 result_future = goal_handle.get_result_async()
                 result_future.add_done_callback(
                     lambda f: self._handle_result(action_name, f))
+
+                # Update action status when action is accepted
+                self.publish_action_event_msg(action_name,
+                                              ActionResult.SUBMITTED)
+                self.publish_running_actions_msg()
             else:
                 self._complete_action(action_name, ActionResult.REJECTED)
         except Exception as e:
@@ -262,6 +276,10 @@ class ActionManager:
             state = self.running_actions[action_name]
             del self.running_actions[action_name]
 
+        # Update action status when action is completed
+        self.publish_action_event_msg(action_name, result)
+        self.publish_running_actions_msg()
+
         # Execute callback outside lock
         if state.callback:
             try:
@@ -307,3 +325,24 @@ class ActionManager:
 
         for name in expired:
             self.cancel_action(name)
+
+    def publish_action_event_msg(self, action_name,
+                                 action_result: ActionResult):
+        """Publish action event message to the action_event_pub."""
+        if self.action_event_pub:
+            status_msg = f'Action "{action_name}" is {action_result.value}'
+            self.action_event_pub.publish(status_msg)
+
+    def publish_running_actions_msg(self):
+        """Publish current action status to the action_running_pub."""
+        if self.action_running_pub:
+            running_actions_msg = self.create_running_action_msg()
+            self.action_running_pub.publish(running_actions_msg)
+
+    def create_running_action_msg(self) -> str:
+        """Create a status message for the current running actions."""
+        status_msg = "Running actions:\n"
+        with self.lock:
+            for name in self.running_actions.keys():
+                status_msg += name
+        return status_msg

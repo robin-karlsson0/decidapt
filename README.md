@@ -64,6 +64,11 @@ source install/setup.bash
 
 # robot_action_controller
 
+### Topics
+
+`/action_event`: `ActionManager` publishes a message when an action starts or completes to `/action_event` topic.
+`/action_running`: `ActionManager` publishes currently running actions (possibly empty) to `/action_running` topic every time an action starts or ends. 
+`/state`: `StateManager` publishes latest state to `/state` topic every time the state changes.
 
 
 # robot_action_decision
