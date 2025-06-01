@@ -1,0 +1,24 @@
+actions:
+  - module: "actions.idle_action"
+    class: "IdleAction"
+    # No action server needed for idle do-nothing
+    
+  - module: "actions.reply_action" 
+    class: "ReplyAction"
+    action_server: "reply_action_server"
+    action_type: "exodapt_robot_interfaces.action.ActionReply"
+    
+  # Example: Complex action with multiple servers
+  # - module: "actions.navigation_action"
+  #   class: "NavigationAction" 
+  #   action_servers:
+  #     - name: "move_base_server"
+  #       type: "nav2_msgs.action.NavigateToPose"
+  #     - name: "dock_server"
+  #       type: "custom_msgs.action.DockRobot"
+  
+  # Example: Simple custom action
+  # - module: "actions.wave_action"
+  #   class: "WaveAction"
+  #   action_server: "wave_action_server"
+  #   action_type: "custom_msgs.action.Wave"

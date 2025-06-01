@@ -1,10 +1,12 @@
 import rclpy
 from action_cycle_controller.action_manager import ActionManager
-from exodapt_robot_interfaces.action import LLM, ActionDecision, ActionReply
+from exodapt_robot_interfaces.action import ActionDecision
 from exodapt_robot_interfaces.srv import State
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from std_msgs.msg import Bool, String
+from std_msgs.msg import String
+
+from .action_registry import ActionRegistry
 
 
 class ActionCycleController(Node):
@@ -15,7 +17,10 @@ class ActionCycleController(Node):
         super().__init__('action_cycle_controller')
 
         self.declare_parameter('ac_freq', 1.0)
+        self.declare_parameter('actions_config', 'config/actions.yaml')
+
         self.ac_loop_freq = float(self.get_parameter('ac_freq').value)
+        action_config_pth = self.get_parameter('actions_config').value
         # self.declare_parameter('num_short_chunks', 20)
         # self.num_short_chunks = self.get_parameter('num_short_chunks').value
 
@@ -32,19 +37,7 @@ class ActionCycleController(Node):
                                        self.run_action_cycle)
 
         # Used to prevent spamming state with high-freq. 'do nothing' actions
-        self.prev_decision = None
-
-        self.valid_actions = {
-            'a': 'do_nothing',
-            'b': 'reply',
-        }
-        self.valid_actions_set = set(self.valid_actions.keys())
-
-        # Dictionary mapping actions to their handler methods
-        self.action_handlers = {
-            'a': self._handle_do_nothing_action,
-            'b': self._handle_reply_action,
-        }
+        self.prev_decision = None  # TODO Needed ???
 
         ####################
         #  Action manager
@@ -68,7 +61,15 @@ class ActionCycleController(Node):
             self.action_running_pub,
         )
 
-        self.action_manager.register_action('reply_action_server', ActionReply)
+        #######################
+        # #  Action registry
+        # #####################
+
+        self.action_registry = ActionRegistry(self, self.action_manager)
+        self.action_registry.load_from_config(action_config_pth)
+
+        self.get_logger().info(
+            f"Loaded {len(self.action_registry.get_valid_actions())} actions")
 
         #####################
         #  Action decision
@@ -117,8 +118,7 @@ class ActionCycleController(Node):
         self.execute_action(action_decision)
 
     def execute_action(self, action_decision: str):
-        '''
-        '''
+        """Execute actions through the action registry."""
         # Get first character out of a potential sequence
         if len(action_decision) > 0:
             action_decision = action_decision[0]
@@ -130,28 +130,17 @@ class ActionCycleController(Node):
             action_decision = 'a'
             self.get_logger().info(f'==> Do nothing: {action_decision}')
 
-        # Get handler to execute action
-        handler = self.action_handlers.get(action_decision)
-        if handler:
-            handler()
-        else:
+        # Execute action
+        success = self.action_registry.execute_action(
+            action_decision,
+            self.state,
+        )
+        if not success:
+            # TODO Replace with human-readable action name
             self.get_logger().error(
-                f'Undefined behavior for action: {action_decision}')
+                f'Failed to execute action: {action_decision}')
 
         self.prev_decision = action_decision
-
-    def _handle_do_nothing_action(self):
-        if self.prev_decision == 'a':
-            return
-        msg = String()
-        msg.data = "Do nothing action: Robot decides to take no new action."
-        self.action_event_pub.publish(msg)
-
-    def _handle_reply_action(self):
-        goal = ActionReply.Goal()
-        goal.state = self.state
-        action_result = self.action_manager.submit_action(
-            'reply_action_server', goal)
 
     def update_state_callback(self, msg):
         """ Callback function to update the state of the robot.
