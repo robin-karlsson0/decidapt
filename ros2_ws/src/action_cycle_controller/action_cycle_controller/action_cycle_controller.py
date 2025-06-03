@@ -1,7 +1,6 @@
 import rclpy
 from action_cycle_controller.action_manager import ActionManager
 from exodapt_robot_interfaces.action import ActionDecision
-from exodapt_robot_interfaces.srv import State
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from std_msgs.msg import String
@@ -84,7 +83,7 @@ class ActionCycleController(Node):
 
         self.state = ''
         self.state_sub = self.create_subscription(
-            State,
+            String,
             'state',
             self.update_state_callback,
             10,

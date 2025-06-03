@@ -1,15 +1,10 @@
 import os
-import tempfile
-from typing import Dict
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock
 
-import pytest
 import rclpy
-import yaml
 from action_cycle_controller.action_registry import ActionRegistry
 from ament_index_python.packages import get_package_share_directory
 from rclpy.executors import SingleThreadedExecutor
-from rclpy.node import Node
 
 PKG_NAME = 'action_cycle_controller'
 
@@ -65,7 +60,7 @@ class TestActionRegistry:
             pass
 
         raise FileNotFoundError(
-            f"actions.yaml not found in source ({config_path}) or installed package"
+            f"actions.yaml not found in source ({config_path}) or installed package"  # noqa: E501
         )
 
     def test_init(self):
