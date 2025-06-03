@@ -28,40 +28,47 @@ Decidapt is designed for robotics researchers and developers working on:
 - Research platforms exploring proactive AI behavior and decision-making
 - Multi-robot systems requiring coordinated but independent decision processes
 
-# Installation
+# Installation and build
 
 Create and source virtual environment
 ```
-pyenv virtualenv 3.10.12 decidapt
-source ~/.pyenv/versions/decidapt/bin/activate
+# Create virtual environment with uv
+uv venv decidapt_env
+source decidapt_env/bin/activate
+
+# Source ROS 2 after activating virtual environment
+source /opt/ros/jazzy/setup.bash
 ```
 
-Install depenencies
+Pull package dependencies
 ```
-pip install -r requirements.txt
+exodapt_robot_interfaces
+exodapt_robot_pt
+```
+**TODO: Git submodule `exodapt_robot_pt` needs pulling?**
+
+Install python package dependencies
+```
+uv pip install -r requirements.txt
 ```
 
+Build ROS 2 packages
 ```
 cd ros2_ws
 
-# Source action interface packages
-source /PATH/TO/robot_llm/robot_llm_action_server/ros2_ws/install/setup.bash
-source /PATH/TO/robot_state_manager/ros2_ws/install/setup.bash
-source /PATH/TO/robot_action_reply/ros2_ws/install/setup.bash
-
-# For install dependencies
-export PYTHONPATH=$PYTHONPATH:/home/USER/.pyenv/versions/decidapt/lib/python3.X//site-packages
-
-colcon build
+colcon build --symlink-install
 
 source install/setup.bash
-
-ros2 run decidapt action_decision --ros-args -p llm_action_server:=llm_action_server_ad_8b_action
 ```
 
 
 # robot_action_controller
 
+### Topics
+
+`/action_event`: `ActionManager` publishes a message when an action starts or completes to `/action_event` topic.
+`/action_running`: `ActionManager` publishes currently running actions (possibly empty) to `/action_running` topic every time an action starts or ends. 
+`/state`: `StateManager` publishes latest state to `/state` topic every time the state changes.
 
 
 # robot_action_decision

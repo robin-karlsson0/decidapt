@@ -1,0 +1,26 @@
+[build-system]
+requires      = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "actions"
+version = "0.0.1"
+description = "Action plugin implementations for Action Cycle Controller"
+readme = "README.md"
+authors = [{ name = "Robin Karlsson", email = "robin.karlsson0@gmail.com" }]
+license = { file = "LICENSE" }
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+]
+requires-python = ">=3.12"
+
+[project.optional-dependencies]
+dev = ["yapf", "bumpver", "isort", "pip-tools", "pytest"]
+
+[project.urls]
+Homepage = "https://github.com/robin-karlsson0/decidapt"
+
+[project.scripts]
+actions = "actions.__main__:main"

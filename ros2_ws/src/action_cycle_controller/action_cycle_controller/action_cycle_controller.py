@@ -1,103 +1,91 @@
-import textwrap
-
 import rclpy
+from action_cycle_controller.action_manager import ActionManager
+from exodapt_robot_interfaces.action import ActionDecision
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from exodapt_robot_interfaces.action import ActionDecision, ActionReply, LLM
-from exodapt_robot_interfaces.srv import State
-from std_msgs.msg import Bool, String
+from std_msgs.msg import String
 
-
-class ActionManager:
-    '''
-    Allows running multiple actions of different names in parallel.
-
-    Dictionary 'running_actions' keep track of running actions by name:
-        running_actions[action_name] --> action_client
-    '''
-    def __init__(self):
-        self.running_actions = {}
-
-    def start_action(
-            self,
-            action_name: str,
-            action_client: ActionClient,
-            goal,
-            ) -> ActionClient:
-        '''
-        Adds ROS 2 Action Client object to set of running actions and returns
-        the Action Goal's future callback function.
-
-        Args:
-            action_name: Identifying name of action
-            action_client: ROS 2 Action Client object
-            goal: Action goal object
-        '''
-        # TODO Remove? Or update state with "current running actions"?
-        if action_name in self.running_actions:
-            self.cancel_action(action_name)
-
-        self.running_actions[action_name] = action_client
-
-        action_send_goal_future = action_client.send_goal_async(goal)
-        return action_send_goal_future
-
-    def cancel_action(self, action_name: str):
-        if action_name in self.running_actions:
-            self.running_actions[action_name].cancel_goal_async()
-            del self.running_actions[action_name]
-
-    def is_action_running(self, action_name: str):
-        return action_name in self.running_actions
-
-    def complete_action(self, action_name: str):
-        '''
-        '''
-        if action_name in self.running_actions:
-            del self.running_actions[action_name]
+from .action_registry import ActionRegistry
 
 
 class ActionCycleController(Node):
-    '''
-    '''
+    """Modular action cycle controller for robotic systems using ROS 2.
+
+    This node orchestrates a continuous action-decision loop at a fixed
+    frequency, where the robot receives state information, requests action
+    decisions from an external decision maker, and executes those decisions
+    through a plugin-based action system.
+
+    The controller operates as a pure orchestrator, delegating all action-
+    specific logic to dynamically loaded plugins managed by an ActionRegistry.
+    This design enables zero-code extension of robot capabilities through
+    configuration files.
+
+    Architecture:
+        - Receives robot state updates via ROS topic subscription
+        - Requests action decisions from external action server at fixed
+          intervals
+        - Validates and executes actions through plugin-based ActionRegistry
+        - Publishes action events and status through ActionManager
+
+    Key Features:
+        - Plugin-based action system with runtime loading from YAML config
+        - Configurable action cycle frequency
+        - Automatic fallback to 'do nothing' action for invalid decisions
+        - Integration with ActionManager for coordinated action execution
+        - State-driven decision making with external action decision service
+
+    Parameters:
+        ac_freq (float): Action cycle frequency in Hz (default: 1.0)
+        actions_config (str): Path to YAML configuration file for action plugins
+                             (default: 'config/actions.yaml')
+
+    Topics:
+        Subscribed:
+            - state (exodapt_robot_interfaces/srv/State): Current robot state
+        Published:
+            - action_event (std_msgs/String): Action execution events
+            - action_running (std_msgs/String): Currently running action status
+
+    Action Clients:
+        - action_decision_action_server (exodapt_robot_interfaces/ActionDecision):
+            Requests action decisions based on current state
+
+    Example Usage:
+        The node automatically starts the action cycle upon initialization.
+        Actions are defined in the YAML configuration file and executed based
+        on single-character decision strings (e.g., 'a' for do nothing, 'b' for
+        reply).
+    """  # noqa: E501
 
     def __init__(self):
-        super().__init__('action_manager')
+        """Initialize the ActionCycleController node.
 
-        self.declare_parameter('ac_loop_freq', 1.0)
-        self.declare_parameter('num_short_chunks', 20)
-        self.ac_loop_freq = float(self.get_parameter('ac_loop_freq').value)
-        self.num_short_chunks = self.get_parameter('num_short_chunks').value
+        Sets up the complete action cycle infrastructure including:
+        - ROS 2 node parameters and timer for action cycle frequency
+        - State subscription for receiving robot state updates
+        - ActionManager for coordinated action execution and event publishing
+        - ActionRegistry for dynamic plugin loading and management
+        - ActionDecision client for requesting decisions from external services
 
-        #################################
-        #  Service clients
-        #################################
-        self.state_client = self.create_client(State, 'get_state')
-        while not self.state_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(
-                '\'state_client\' service not available, waiting again...')
+        The initialization process loads action plugins from the configured
+        YAML file and validates the action registry setup.
+        """
+        super().__init__('action_cycle_controller')
 
-        self.state_req = State.Request()
+        self.declare_parameter('ac_freq', 1.0)
+        self.declare_parameter('actions_config', 'config/actions.yaml')
 
-        ####################
-        #  Action servers
-        ####################
-        self._ac_action_client = ActionClient(self, ActionDecision,
-                                              'action_decision_action_server')
+        self.ac_loop_freq = float(self.get_parameter('ac_freq').value)
+        action_config_pth = self.get_parameter('actions_config').value
+        # self.declare_parameter('num_short_chunks', 20)
+        # self.num_short_chunks = self.get_parameter('num_short_chunks').value
 
-        self._reply_action_client = ActionClient(self, ActionReply,
-                                                 'reply_action_server')
-
-        # Action decision publisher
-        self.action_dec_pub = self.create_publisher(
+        self.state = ''
+        self.state_sub = self.create_subscription(
             String,
-            'action_decision',
-            10,
-        )
-        # Action response publisher
-        self.action_resp_pub = self.create_publisher(
-            String,
-            'action_response',
+            'state',
+            self.update_state_callback,
             10,
         )
 
@@ -106,311 +94,235 @@ class ActionCycleController(Node):
                                        self.run_action_cycle)
 
         # Used to prevent spamming state with high-freq. 'do nothing' actions
-        self.prev_action = None
+        self.prev_decision = None  # TODO Needed ???
+
+        ####################
+        #  Action manager
+        ####################
 
         self.get_logger().info('Initializing ActionManager')
-        self.action_manager = ActionManager()
+        self.action_event_pub = self.create_publisher(
+            String,
+            'action_event',
+            10,
+        )
+        self.action_running_pub = self.create_publisher(
+            String,
+            'action_running',
+            10,
+        )
 
-        self.valid_actions = {
-            'a': 'do_nothing',
-            'b': 'reply',
-        }
+        self.action_manager = ActionManager(
+            self,
+            self.action_event_pub,
+            self.action_running_pub,
+        )
 
-        #############################
-        #  Robot state information
-        #############################
-        self.create_subscription(
-            Bool, '/tts_is_speaking', self.tts_is_speaking_callback, 10)
-        self.state_is_speaking = False
+        #######################
+        # #  Action registry
+        # #####################
 
-        ##################
-        #  Chatbot mode
-        ##################
-        self.declare_parameter('chatbot_mode', True)
-        self.chatbot_mode = self.get_parameter('chatbot_mode').value
-        self.chatbot_action = 'a'
+        self.get_logger().info('Initializing ActionRegistry')
+        self.action_registry = ActionRegistry(self, self.action_manager)
+        self.action_registry.load_from_config(action_config_pth)
+
+        self.valid_actions_set = set(self.action_registry.get_valid_actions())
+
+        self.get_logger().info(
+            f"Loaded {len(self.action_registry.get_valid_actions())} actions")
+
+        #####################
+        #  Action decision
+        #####################
+
+        self._ad_action_client = ActionClient(
+            self,
+            ActionDecision,
+            'action_decision_action_server',
+        )
 
     def run_action_cycle(self):
-        '''
-        Runs an action cycle represented by a sequence of callback functions.
+        """Execute a single iteration of the action cycle.
 
-        1. Get current state
-        --> 2. Get action decision
-            --> 3. Execute action decision
-        '''
-        self.get_current_state()
+        This method implements the core action-decision loop:
+        1. Captures the current robot state
+        2. Requests an action decision from the external action decision server
+        3. Initiates asynchronous processing of the decision response
 
-    def get_current_state(self):
-        '''
-        '''
-        state_future = self.state_client.call_async(self.state_req)
-        state_future.add_done_callback(self.send_ac_goal)
+        The method is called periodically by the ROS 2 timer at the configured
+        frequency (ac_freq parameter). It sends the current state to the action
+        decision server and sets up callbacks to handle the asynchronous
+        response.
 
-    def send_ac_goal(self, state_future):
-        '''
-        '''
-        # Unpack state response
-        state = state_future.result().out_state
+        The action cycle follows this sequence:
+        Current State → Action Decision Request → Action Execution
 
-        # State of current action cycle
-        self.current_state = state
-        self.current_visual_info = self.extract_state_part(
-            self.current_state, 'visual_information')
-        self.current_state_chunks = self.extract_state_part(
-            self.current_state, 'state_chunks', exclude_tag=True)
-        self.current_robot_state = self.get_robot_state()
+        Note:
+            This method is non-blocking and uses ROS 2 action client callbacks
+            to handle the decision response asynchronously.
+        """
+        ad_goal = ActionDecision.Goal()
+        ad_goal.state = self.state
 
-        # Chatbot mode
-        # Automatically select 'reply' action if last state is /asr
-        if self.chatbot_mode:
-            last_state_chunk = self.extract_state_chunks(
-                self.current_state_chunks, 1)
-            # TMP
-            # with open('/tmp/chatbot_state_chunk.txt', 'w') as f:
-            #     f.write(last_state_chunk)
-            if 'topic: /asr' in last_state_chunk:
-                self.chatbot_action = 'b'
-            else:
-                self.chatbot_action = 'a'
+        self._ad_action_client.wait_for_server()
+        self.ad_goal_future = self._ad_action_client.send_goal_async(ad_goal)
+        self.ad_goal_future.add_done_callback(self.ad_response_callback)
 
-        # Add visual information to state chunk:
-        # <visual_information>
-        # ...
-        # </visual_informmation>
-        #
-        # State chunk 1
-        # ...
-        self.current_state_chunks = \
-            self.current_state_chunks + \
-            '\n\n' + \
-            self.current_visual_info + \
-            '\n' + \
-            self.current_robot_state
+    def ad_response_callback(self, ad_goal_future):
+        """Handle the response from the action decision server goal submission.
 
-        short_state_chunks = self.extract_state_part(
-            self.current_state, 'state_chunks', exclude_tag=True)
-        short_state_chunks = self.extract_state_chunks(
-            short_state_chunks, self.num_short_chunks)
-        short_state_chunks = \
-            short_state_chunks + \
-            '\n\n' + \
-            self.current_visual_info + \
-            '\n' + \
-            self.current_robot_state
+        This callback is triggered when the action decision server responds to
+        the goal submission request. It checks if the goal was accepted and
+        sets up the next callback to handle the actual result.
 
-        # Create action decision goal (w. shortened state)
-        ac_goal = ActionDecision.Goal()
-        ac_goal.state = short_state_chunks
+        Args:
+            ad_goal_future: Future object containing the goal handle response
+                           from the action decision server
 
-        self._ac_action_client.wait_for_server()
-        self.send_ac_goal_future = self._ac_action_client.send_goal_async(
-            ac_goal)
-        self.send_ac_goal_future.add_done_callback(
-            self.ac_goal_response_callback)
+        Behavior:
+            - If goal is accepted: Sets up result callback to wait for decision
+            - If goal is rejected: Logs rejection and terminates the cycle
 
-    def ac_goal_response_callback(self, ac_future):
-        '''
-        '''
-        goal_handle = ac_future.result()
-        if not goal_handle.accepted:
+        Note:
+            This is an intermediate callback in the action decision chain.
+            The actual action decision result is handled by ad_result_callback.
+        """
+        ad_goal_handle = ad_goal_future.result()
+
+        if not ad_goal_handle.accepted:
             self.get_logger().info('Goal rejected')
             return
 
-        self.get_ac_result_future = goal_handle.get_result_async()
-        self.get_ac_result_future.add_done_callback(
-            self.get_ac_result_callback)
+        self.ad_result_future = ad_goal_handle.get_result_async()
+        self.ad_result_future.add_done_callback(self.ad_result_callback)
 
-    def get_ac_result_callback(self, ac_future):
-        '''
-        '''
-        ac_result = ac_future.result().result
-        pred_action = ac_result.pred_action
+    def ad_result_callback(self, ad_result_future):
+        """Process the action decision result and initiate action execution.
 
-        self.get_logger().info(f'Received action: {pred_action}')
+        This callback handles the final result from the action decision server,
+        extracts the predicted action from the response, and triggers the
+        action execution through the execute_action method.
 
-        self.execute_action(pred_action)
+        Args:
+            ad_result_future: Future object containing the action decision
+                result with the predicted action string
 
-    def execute_action(self, pred_action: str):
-        '''
-        '''
+        Behavior:
+            - Extracts the action decision from the result
+            - Logs the received action for debugging/monitoring
+            - Delegates action execution to the execute_action method
 
-        # TODO How to handle action execution
-        # 1. Select appropriate action wrapper
-        # 2. Action wrapper executes action
-        # 3. Action wrapper returns action response
-        # 4. Action response is published to /action_response
-        # 5. Callback chain terminates
+        Note:
+            This completes the asynchronous action decision request chain
+            initiated by run_action_cycle().
+        """
+        ad_result = ad_result_future.result().result
+        action_decision = ad_result.pred_action
 
+        self.get_logger().info(f'Received action: {action_decision}')
+
+        self.execute_action(action_decision)
+
+    def execute_action(self, action_decision: str):
+        """Execute the specified action through the action registry.
+
+        This method validates the action decision, handles invalid actions with
+        fallback behavior, and delegates execution to the appropriate action
+        through the ActionRegistry.
+
+        Args:
+            action_decision (str): Single character or string representing the
+                                 action to execute. Only the first character is
+                                 used for decision mapping.
+
+        Behavior:
+            - Extracts first character from action decision string
+            - Validates action against loaded plugin registry
+            - Falls back to 'do nothing' action ('a') for invalid decisions
+            - Routes valid actions to ActionRegistry for plugin execution
+            - Logs execution status and errors
+            - Updates previous decision tracker
+
+        Action Validation:
+            Invalid actions are automatically replaced with the default idle
+            action ('a') to ensure system stability.
+            # TODO: Read yaml config for default action
+
+        Error Handling:
+            Execution failures are logged as errors but do not interrupt the
+            action cycle, allowing the system to continue operating.
+        """
         # Get first character out of a potential sequence
+        if len(action_decision) > 0:
+            action_decision = action_decision[0]
 
-        ########################
-        #  NOTE: Chatbot mode
-        ########################
-        if self.chatbot_mode:
-            self.get_logger().info(f'CHATBOT MODE: {self.chatbot_action}')
-            pred_action = self.chatbot_action
+        # Action validity check
+        if action_decision not in self.valid_actions_set:
+            self.get_logger().info(
+                f'Invalid action received: {action_decision}')
+            action_decision = 'a'
+            self.get_logger().info(f'==> Do nothing: {action_decision}')
 
-        if len(pred_action) > 0:
-            pred_action = pred_action[0]
-
-        valid_action_set = list(self.valid_actions.keys())
-
-        if pred_action not in valid_action_set:
-            self.get_logger().info(f'Invalid action received: {pred_action}')
-            pred_action = 'a'
-            self.get_logger().info(f'==> Do nothing: {pred_action}')
-
-        if pred_action == 'a':
-            # TODO Do nothing action
-            # self.get_logger().info('Executing action a')
-            # Don't publish sequantial 'do nothing' actions
-            if pred_action == 'a' and self.prev_action == 'a':
-                return
-            msg = String()
-            msg.data = "<Robot idle action> Robot decides to take no new action."
-            self.action_dec_pub.publish(msg)
-
-        elif pred_action == 'b':
-
-            if self.state_is_speaking or self.action_manager.is_action_running('reply'):
-                self.get_logger().info('Reply action already running. Ignore')
-            else:
-                msg = String()
-                msg.data = "<Robot started reply action> Robot decides to reply to user."
-                self.action_dec_pub.publish(msg)
-
-                # self.get_logger().info('Executing action b')
-                goal = ActionReply.Goal()
-                goal.state = self.current_state_chunks
-                self.reply_action_send_goal_future = self.action_manager.start_action(
-                    'reply',
-                    self._reply_action_client,
-                    goal,
-                )
-                # NOTE: done ==> 'Send goal' is done (not action complete)
-                self.reply_action_send_goal_future.add_done_callback(
-                    self.reply_action_response_callback)
-
-        else:
+        # Execute action
+        success = self.action_registry.execute_action(
+            action_decision,
+            self.state,
+        )
+        if not success:
+            # TODO Replace with human-readable action name
             self.get_logger().error(
-                f'Undefined behavior for action: {pred_action}')
+                f'Failed to execute action: {action_decision}')
 
-        self.prev_action = pred_action
+        self.prev_decision = action_decision
 
-    def reply_action_response_callback(self, future):
-        '''
-        '''
-        goal_handle = future.result()
-        if not goal_handle.accepted:
-            self.get_logger().info('\'Reply\' action goal rejected')
-            self.action_manager.complete_action('reply')
-            return
+    def update_state_callback(self, msg):
+        """Update the robot's internal state representation.
 
-        self.get_reply_result_future = goal_handle.get_result_async()
-        self.get_reply_result_future.add_done_callback(
-            self.reply_action_completed_callback)
-
-    def reply_action_completed_callback(self, future):
-        '''
-        '''
-        self.action_manager.complete_action('reply')
-        self.get_logger().info('\'Reply\' action completed')
-
-    def tts_is_speaking_callback(self, msg):
-        '''
-        Read robot 'is_speaking' robot state.
-        '''
-        self.state_is_speaking = msg.data
-
-    def get_robot_state(self):
-        '''
-        Returns a string representing robots state including ongoing actions.
-        '''
-        robot_state = textwrap.dedent('''
-            <robot_state>
-            Robot is speaking: {}
-            </robot_state>
-        ''')
-        robot_state = robot_state.format(self.state_is_speaking)
-        return robot_state
-
-    @staticmethod
-    def extract_state_part(
-            state: str,
-            tag: str,
-            exclude_tag: bool = False,
-            ) -> str:
-        '''
-        Returns a substring representing part of state inside a tag like
-            <state_chunks>
-            ...
-            </state_chunks>.
+        This callback function is triggered whenever a new state message is
+        received on the 'state' topic. It updates the controller's internal
+        state variable, which is then used in subsequent action decision
+        requests.
 
         Args:
-            state: Full state.
-            tag: Extract part of state within a tag (ex: state_chunks)
-        '''
-        # Split the text into lines
-        lines = state.split('\n')
+            msg: ROS message containing the new state data. The state
+                information is extracted from msg.data and stored as a string.
 
-        # Find the indices of the last pair of <tag> and </tag> tags
-        start_index = -1
-        end_index = -1
+        State Usage:
+            The updated state is automatically included in the next action cycle
+            when requesting decisions from the action decision server, enabling
+            state-driven action selection.
 
-        for i, line in enumerate(lines):
-            if line.strip() == f'<{tag}>':
-                start_index = i
-            elif line.strip() == f'</{tag}>':
-                end_index = i
+        Note:
+            This method maintains the most recent state information for use in
+            the continuous action-decision loop.
+        """
+        self.state = msg.data
 
-        if exclude_tag:
-            start_index += 1
-            end_index -= 1
-
-        # If we found both tags
-        if start_index != -1 and end_index != -1 and start_index < end_index:
-            # Extract the content between the tags, including the tags themselves
-            chunk = '\n'.join(lines[start_index:end_index+1])
-            return chunk.strip()
-        else:
-            return f"No valid {tag} found"
-
-    @staticmethod
-    def extract_state_chunks(state_chunks: str, num: int) -> str:
-        '''
-        Returns the N bottom / most recent state chunks.
-
-        Args:
-            state_chunks: Sequence of state information chunks formatted as:
-                topic: /asr
-                ts: 2024-08-31 17:45:23
-                data: <Robot heard voice> User says: Hey robot, I'm heading ...
-                ---
-                topic: /action_response
-                ts: 2024-08-31 17:45:25
-                data: <Robot completed reply action> Robot says: Certainly! ...
-                ---
-            num: Number of chunks to extract counting from the bottom.
-        '''
-        # Split the input string into chunks
-        chunks = state_chunks.strip().split('---')
-
-        # Remove any empty chunks
-        chunks = [chunk.strip() for chunk in chunks if chunk.strip()]
-
-        # Get the N bottom chunks
-        bottom_chunks = chunks[-num:]
-
-        # Join the chunks back together with the separator
-        result = '\n---\n'.join(bottom_chunks) + '\n---'
-
-        return result
 
 def main(args=None):
+    """Main entry point for the ActionCycleController node.
+
+    Initializes the ROS 2 system, creates an ActionCycleController instance,
+    and runs the node until shutdown. This function handles the complete
+    lifecycle of the action cycle controller.
+
+    Args:
+        args: Command line arguments passed to rclpy.init() (optional)
+
+    Lifecycle:
+        1. Initialize ROS 2 system
+        2. Create ActionCycleController node instance
+        3. Log startup message
+        4. Enter ROS 2 spin loop to handle callbacks and timers
+        5. Clean up resources on shutdown
+
+    The node will continuously execute action cycles at the configured frequency
+    until interrupted or shutdown.
+    """
     rclpy.init(args=args)
 
     state_client = ActionCycleController()
-    state_client.get_logger().info('Action controller is running...')
+    state_client.get_logger().info('Action Cycle Controller is running...')
     rclpy.spin(state_client)
 
     state_client.destroy_node()

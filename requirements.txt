@@ -1,6 +1,10 @@
-mol-robot-prompt-templates
-empy==3.3.4
-pyros-genmsg
-setuptools
-catkin_pkg
+catkin-pkg
 lark
+empy
+wheel
+pyyaml
+numpy
+pytest
+transformers
+ros2_ws/src/exodapt_robot_pt
+ros2_ws/src/actions

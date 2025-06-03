@@ -1,10 +1,10 @@
 from setuptools import find_packages, setup
 
-package_name = 'action_cycle_controller'
+package_name = 'state_manager'
 
 setup(
     name=package_name,
-    version='0.0.0',
+    version='0.0.1',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages',
@@ -14,7 +14,8 @@ setup(
     install_requires=[
         'setuptools',
         'exodapt_robot_interfaces',
-        'actions',
+        'exodapt-robot-pt',
+        'transformers>=4.52.3',
     ],
     zip_safe=True,
     maintainer='robin',
@@ -24,9 +25,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'action_controller = ' + package_name +
-            '.action_cycle_controller:main',
-            'action_decision = ' + package_name + '.action_decision:main',
+            'state_manager = ' + package_name + '.state_manager:main',
         ],
     },
 )

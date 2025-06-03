@@ -161,9 +161,8 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+.vscode/
+
 ros2_ws/build
 ros2_ws/install
 ros2_ws/log
-
-# External package dependencies
-ros2_ws/src/exodapt_robot_interfaces
