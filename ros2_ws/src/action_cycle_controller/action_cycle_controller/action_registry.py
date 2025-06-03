@@ -1,9 +1,9 @@
 import importlib
+import os
 from typing import Dict
 
 import yaml
-
-from .base_action import BaseAction
+from actions.base_action import BaseAction
 
 
 class ActionRegistry:
@@ -70,9 +70,14 @@ class ActionRegistry:
                 definitions
 
         Raises:
-            Logs errors if configuration file cannot be read or parsed, but
-                does not raise exceptions to prevent system failure
+            Logs errors if configuration file cannot be read or parsed, and
+                raise and exception if configuration file is not found
         """
+        if not os.path.isfile(config_path):
+            self.node.get_logger().error(
+                f"Configuration file not found: {config_path}")
+            raise FileNotFoundError(
+                f"Configuration file not found: {config_path}")
         try:
             with open(config_path, 'r') as file:
                 config = yaml.safe_load(file)

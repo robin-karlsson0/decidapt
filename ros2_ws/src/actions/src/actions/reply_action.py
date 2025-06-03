@@ -1,6 +1,5 @@
+from actions.base_action import BaseAction
 from exodapt_robot_interfaces.action import ActionReply
-
-from ..base_action import BaseAction
 
 
 class ReplyAction(BaseAction):

@@ -14,6 +14,7 @@ setup(
     install_requires=[
         'setuptools',
         'exodapt_robot_interfaces',
+        'actions',
     ],
     zip_safe=True,
     maintainer='robin',
@@ -23,7 +24,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'action_controller = ' + package_name + '.action_cycle_controller:main',
+            'action_controller = ' + package_name +
+            '.action_cycle_controller:main',
             'action_decision = ' + package_name + '.action_decision:main',
         ],
     },

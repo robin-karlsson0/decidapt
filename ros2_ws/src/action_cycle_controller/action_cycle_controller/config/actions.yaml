@@ -9,7 +9,7 @@ actions:
     action_server: "reply_action_server"
     action_type: "exodapt_robot_interfaces.action.ActionReply"
     action_key: 'b'
-    
+
   # Example: Complex action with multiple servers
   # - module: "actions.navigation_action"
   #   class: "NavigationAction" 

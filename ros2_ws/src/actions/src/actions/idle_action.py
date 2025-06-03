@@ -1,6 +1,5 @@
+from actions.base_action import BaseAction
 from std_msgs.msg import String
-
-from ..base_action import BaseAction
 
 
 class IdleAction(BaseAction):
