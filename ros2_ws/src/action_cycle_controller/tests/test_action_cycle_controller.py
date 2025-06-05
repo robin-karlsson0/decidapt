@@ -143,7 +143,7 @@ class TestActionCycleController:
         # Setup mocks
         mock_registry_instance = MagicMock()
         mock_registry_instance.get_valid_actions.return_value = ['a', 'b']
-        mock_registry_instance.execute_action.return_value = False  # Simulate failure
+        mock_registry_instance.execute_action.return_value = False  # Simulate failure  # noqa: E501
         mock_registry.return_value = mock_registry_instance
 
         mock_manager_instance = MagicMock()

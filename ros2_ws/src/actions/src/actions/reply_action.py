@@ -1,5 +1,5 @@
 from actions.base_action import BaseAction
-from exodapt_robot_interfaces.action import ActionReply
+from exodapt_robot_interfaces.action import ReplyAction as ReplyActionInterface
 
 
 class ReplyAction(BaseAction):
@@ -11,7 +11,7 @@ class ReplyAction(BaseAction):
     create self-contained action plugins that integrate with the modular
     ActionCycleController architecture.
 
-    The plugin submits ActionReply goals to a configurable action server,
+    The plugin submits ReplyAction goals to a configurable action server,
     allowing the robot to provide contextual responses based on the current
     state information.
 
@@ -26,7 +26,7 @@ class ReplyAction(BaseAction):
           module: "actions.reply_action"
           class: "ReplyAction"
           action_server: "reply_action_server"
-          action_type: "exodapt_robot_interfaces.action.ActionReply"
+          action_type: "exodapt_robot_interfaces.action.ReplyAction"
           action_key: 'b'
     """
 
@@ -48,7 +48,7 @@ class ReplyAction(BaseAction):
     def execute(self, state: str):
         """Execute the reply action with the given state information.
 
-        Creates and submits an ActionReply goal to the configured action server
+        Creates and submits an ReplyAction goal to the configured action server
         through the ActionManager. The goal contains the current state string
         which can be used by the action server to generate an appropriate
         response.
@@ -62,7 +62,7 @@ class ReplyAction(BaseAction):
             This method is non-blocking. The ActionManager handles the
             asynchronous submission and monitoring of the action goal.
         """
-        goal = ActionReply.Goal()
+        goal = ReplyActionInterface.Goal()
         goal.state = state
         # Use action server name from config
         server_name = self.config.get('action_server', 'reply_action_server')

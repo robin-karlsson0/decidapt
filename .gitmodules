@@ -1,6 +1,3 @@
 [submodule "ros2_ws/src/exodapt_robot_pt"]
 	path = ros2_ws/src/exodapt_robot_pt
 	url = git@github.com:robin-karlsson0/exodapt_robot_pt.git
-[submodule "ros2_ws/src/exodapt_robot_interfaces"]
-	path = ros2_ws/src/exodapt_robot_interfaces
-	url = git@github.com:robin-karlsson0/exodapt_robot_interfaces.git

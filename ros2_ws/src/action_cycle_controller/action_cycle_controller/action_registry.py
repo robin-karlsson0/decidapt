@@ -182,3 +182,28 @@ class ActionRegistry:
             ...     print("Action 'x' is not available")
         """
         return set(self.actions.keys())
+
+    def get_valid_action_descr(self) -> str:
+        """Get a formatted string of valid action keys, names and descriptions.
+
+        Returns:
+            Formatted string of action keys and names, e.g.:
+                <action_key>: [<action_name>] <action_description>
+                <action_key>: [<action_name>] <action_description>
+
+        Example:
+            >>> print(registry.get_valid_action_descriptions())
+            a: [Idle action] A no-operation action that represents a decision to remain idle.
+            b: [Reply action] This action allows the robot to reply to user interactions by sending a response based on the current state information.
+        """  # noqa E501
+        valid_actions = self.get_valid_actions()
+
+        out = []
+        for action_key in valid_actions:
+            action = self.actions[action_key]
+            action_name = action.get_action_name()
+            action_description = action.get_action_description()
+
+            out.append(f"{action_key}: [{action_name}] {action_description}")
+
+        return '\n'.join(out)
