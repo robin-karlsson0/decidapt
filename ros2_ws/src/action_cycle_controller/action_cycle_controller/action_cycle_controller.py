@@ -127,6 +127,7 @@ class ActionCycleController(Node):
         self.action_registry.load_from_config(action_config_pth)
 
         self.valid_actions_set = set(self.action_registry.get_valid_actions())
+        self.valid_action_descr = self.action_registry.get_valid_action_descr()
 
         self.get_logger().info(
             f"Loaded {len(self.action_registry.get_valid_actions())} actions")
@@ -163,6 +164,7 @@ class ActionCycleController(Node):
         """
         ad_goal = ActionDecision.Goal()
         ad_goal.state = self.state
+        ad_goal.valid_actions = self.valid_action_descr
 
         self._ad_action_client.wait_for_server()
         self.ad_goal_future = self._ad_action_client.send_goal_async(ad_goal)

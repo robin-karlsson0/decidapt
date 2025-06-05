@@ -2,6 +2,17 @@
 source ../decidapt_env/bin/activate
 source /opt/ros/jazzy/setup.bash
 
+# Update external ROS 2 package dependencies
+vcs pull src
+
+# Upgrade any local pip packages
+cd ../
+git submodule update --remote
+uv pip install --upgrade -r requirements.txt
+cd ros2_ws
+
+rm -rf build install log
+
 # NOTE: Need setuptools for building, but conflict with ROS 2 when running
 uv pip install setuptools
 colcon build --symlink-install

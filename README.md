@@ -40,12 +40,28 @@ source decidapt_env/bin/activate
 source /opt/ros/jazzy/setup.bash
 ```
 
-Pull package dependencies
+Import external ROS 2 package dependencies
+```bash
+vcs import ros2_ws/src/ < .rosinstall
 ```
-exodapt_robot_interfaces
-exodapt_robot_pt
+
+Import external Python package dependencies
+```bash
+cd ros2_ws/src
+git submodule add git@github.com:robin-karlsson0/exodapt_robot_pt.git exodapt_robot_pt
+cd ../../
 ```
 **TODO: Git submodule `exodapt_robot_pt` needs pulling?**
+
+Update external ROS 2 package dependencies
+```bash
+vcs pull ros2_ws/src
+```
+
+Update external Python package dependencies
+```bash
+git submodule update --remote
+```
 
 Install python package dependencies
 ```
@@ -61,6 +77,12 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
+# Running tests
+
+```bash
+colcon test --pytest-args="-s"
+```
+
 
 # robot_action_controller
 
@@ -70,9 +92,16 @@ source install/setup.bash
 `/action_running`: `ActionManager` publishes currently running actions (possibly empty) to `/action_running` topic every time an action starts or ends. 
 `/state`: `StateManager` publishes latest state to `/state` topic every time the state changes.
 
+### Action servers
+
+`action_decision_action_server`: `ActionDecisionActionServer` takes a state and returns the predicted optimal action key
 
 # robot_action_decision
 
 Service for predicting the optimal action to take based on the current state.
 
 The created action service is named `llm_action_server_ad_8b_action` + `_action`.
+
+
+# TODO
+- Why prompt templates are separated from implementation (e.g. `ReplyAction` <--> `action_reply_pt()`)
