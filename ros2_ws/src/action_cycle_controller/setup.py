@@ -1,3 +1,6 @@
+import os
+from glob import glob
+
 from setuptools import find_packages, setup
 
 package_name = 'action_cycle_controller'
@@ -10,6 +13,7 @@ setup(
         ('share/ament_index/resource_index/packages',
          ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*')),
     ],
     install_requires=[
         'setuptools',
@@ -24,7 +28,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'action_controller = ' + package_name +
+            'action_cycle_controller = ' + package_name +
             '.action_cycle_controller:main',
             'action_decision = ' + package_name + '.action_decision:main',
         ],
