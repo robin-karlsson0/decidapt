@@ -1,13 +1,9 @@
-import asyncio
-from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, call, patch
+import os
+from unittest.mock import MagicMock, patch
 
-import pytest
 import rclpy
 from action_cycle_controller.action_cycle_controller import \
     ActionCycleController
-from exodapt_robot_interfaces.action import ActionDecision
-from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.parameter import Parameter
 from std_msgs.msg import String
@@ -65,13 +61,15 @@ class TestActionCycleController:
 
         # Verify default parameters
         assert self.action_cycle_controller.ac_loop_freq == 1.0
-        assert self.action_cycle_controller.get_parameter(
-            'actions_config').value == 'config/actions.yaml'
+        # assert os.path.isabs(config_path)
+        assert self.action_cycle_controller.action_config_pth.endswith(
+            'ros2_ws/install/action_cycle_controller/share/action_cycle_controller/config/actions.yaml'  # noqa: E501
+        )
 
         # Verify ActionRegistry initialization
         mock_registry.assert_called_once()
         mock_registry_instance.load_from_config.assert_called_once_with(
-            'config/actions.yaml')
+            self.action_cycle_controller.action_config_pth)
 
         # Verify ActionManager initialization
         mock_manager.assert_called_once()

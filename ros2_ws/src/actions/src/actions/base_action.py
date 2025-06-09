@@ -1,3 +1,4 @@
+import importlib
 from abc import ABC, abstractmethod
 from typing import Any, Dict
 
@@ -95,9 +96,12 @@ class BaseAction(ABC):
         # Handle single action server
         if 'action_server' in self.config:
             server_name = self.config['action_server']
-            action_type = self.config.get('action_type')
-            if action_type:
+            action_type_str = self.config.get('action_type')
+            if action_type_str:
                 try:
+                    # Resolve string to actual action type
+                    action_type = self._resolve_action_type(action_type_str)
+
                     self.action_manager.register_action(
                         server_name, action_type)
                     self.node.get_logger().info(
@@ -111,8 +115,11 @@ class BaseAction(ABC):
         elif 'action_servers' in self.config:
             for server_config in self.config['action_servers']:
                 server_name = server_config['name']
-                action_type = server_config['type']
+                action_type_str = server_config['type']
                 try:
+                    # Resolve string to actual action type
+                    action_type = self._resolve_action_type(action_type_str)
+
                     self.action_manager.register_action(
                         server_name, action_type)
                     self.node.get_logger().info(
@@ -129,6 +136,71 @@ class BaseAction(ABC):
                 f"Action key not found in config for {self.get_action_name()}."
                 "Please ensure 'action_key' is defined in the configuration.")
             raise KeyError("Action key not found in config")
+
+    def _resolve_action_type(self, action_type_str: str):
+        """Resolve action type string to actual class for ROS 2 action clients.
+
+        This method performs runtime class loading to convert a string
+        representation of a ROS 2 action type into the actual Python class
+        object required by ActionClient constructors. This enables dynamic
+        action type specification through configuration files rather than
+        hardcoded imports.
+
+        The method uses Python's importlib to dynamically import the module and
+        extract the class, supporting the plugin architecture where action types
+        are specified in YAML configuration files.
+
+        Args:
+            action_type_str (str): Fully qualified action type string in the
+                format "package.module.ClassName" (e.g.,
+                "exodapt_robot_interfaces.action.ReplyAction")
+
+        Returns:
+            type: The actual action class object that can be used to
+                instantiate action clients. This is equivalent to importing the
+                class directly but done at runtime.
+
+        Raises:
+            ImportError: If the specified module cannot be imported (package not
+                found, not sourced, etc.)
+            AttributeError: If the specified class name is not in the module
+            ValueError: If the action_type_str format is invalid
+
+        Example:
+            ```python
+            # Input string
+            action_str = "exodapt_robot_interfaces.action.ReplyAction"
+
+            # Method transforms this to equivalent of:
+            # from exodapt_robot_interfaces.action import ReplyAction
+            action_class = self._resolve_action_type(action_str)
+
+            # Now action_class can be used with ActionClient:
+            client = ActionClient(node, action_class, 'server_name')
+            ```
+
+        Note:
+            This transformation is necessary because ROS 2 ActionClient
+            requires the actual class object, not a string representation. The
+            method enables configuration-driven action type specification while
+            maintaining type safety at runtime.
+        """
+        try:
+            # Split module and class name
+            module_path, class_name = action_type_str.rsplit('.', 1)
+
+            # Import the module
+            module = importlib.import_module(module_path)
+
+            # Get the class
+            action_class = getattr(module, class_name)
+
+            return action_class
+
+        except Exception as e:
+            self.node.get_logger().error(
+                f"Failed to resolve action type '{action_type_str}': {e}")
+            raise
 
     @abstractmethod
     def execute(self, state: str) -> None:

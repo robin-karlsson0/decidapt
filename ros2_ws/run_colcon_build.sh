@@ -5,10 +5,16 @@ source /opt/ros/jazzy/setup.bash
 # Update external ROS 2 package dependencies
 vcs pull src
 
-# Upgrade any local pip packages
+# Upgrade external pip packages
 cd ../
-git submodule update --remote
 uv pip install --upgrade -r requirements.txt
+
+# Upgrade all local pip packages
+git submodule update --remote
+uv pip install --upgrade \
+    ros2_ws/src/exodapt_robot_pt \
+    ros2_ws/src/actions
+
 cd ros2_ws
 
 rm -rf build install log

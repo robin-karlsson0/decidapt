@@ -242,7 +242,7 @@ class TestActionDecisionActionServer:
             assert goal_handle is not None, "Goal handle is None - future may have failed"  # noqa: E501
             assert goal_handle.accepted, "Goal was not accepted by action server"  # noqa: E501
 
-            print(f"Goal accepted, waiting for result...")
+            print("Goal accepted, waiting for result...")
 
             # Wait for result
             get_result_future = goal_handle.get_result_async()

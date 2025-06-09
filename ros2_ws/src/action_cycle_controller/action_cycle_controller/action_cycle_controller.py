@@ -84,16 +84,16 @@ class ActionCycleController(Node):
 
         # Resolve the full path to the config file
         if os.path.isabs(action_config_relative):
-            action_config_pth = action_config_relative
+            self.action_config_pth = action_config_relative
         else:
             try:
                 package_share_dir = get_package_share_directory(
                     'action_cycle_controller')
-                action_config_pth = os.path.join(package_share_dir,
-                                                 action_config_relative)
+                self.action_config_pth = os.path.join(package_share_dir,
+                                                      action_config_relative)
             except Exception:
                 # Fallback for development
-                action_config_pth = action_config_relative
+                self.action_config_pth = action_config_relative
 
         # self.declare_parameter('num_short_chunks', 20)
         # self.num_short_chunks = self.get_parameter('num_short_chunks').value
@@ -141,7 +141,7 @@ class ActionCycleController(Node):
 
         self.get_logger().info('Initializing ActionRegistry')
         self.action_registry = ActionRegistry(self, self.action_manager)
-        self.action_registry.load_from_config(action_config_pth)
+        self.action_registry.load_from_config(self.action_config_pth)
 
         self.valid_actions_set = set(self.action_registry.get_valid_actions())
         self.valid_action_descr = self.action_registry.get_valid_action_descr()

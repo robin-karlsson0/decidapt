@@ -6,5 +6,3 @@ pyyaml
 numpy
 pytest
 transformers
-ros2_ws/src/exodapt_robot_pt
-ros2_ws/src/actions
