@@ -1,5 +1,8 @@
+import os
+
 import rclpy
 from action_cycle_controller.action_manager import ActionManager
+from ament_index_python.packages import get_package_share_directory
 from exodapt_robot_interfaces.action import ActionDecision
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -77,7 +80,21 @@ class ActionCycleController(Node):
         self.declare_parameter('actions_config', 'config/actions.yaml')
 
         self.ac_loop_freq = float(self.get_parameter('ac_freq').value)
-        action_config_pth = self.get_parameter('actions_config').value
+        action_config_relative = self.get_parameter('actions_config').value
+
+        # Resolve the full path to the config file
+        if os.path.isabs(action_config_relative):
+            action_config_pth = action_config_relative
+        else:
+            try:
+                package_share_dir = get_package_share_directory(
+                    'action_cycle_controller')
+                action_config_pth = os.path.join(package_share_dir,
+                                                 action_config_relative)
+            except Exception:
+                # Fallback for development
+                action_config_pth = action_config_relative
+
         # self.declare_parameter('num_short_chunks', 20)
         # self.num_short_chunks = self.get_parameter('num_short_chunks').value
 
