@@ -11,8 +11,8 @@
     <arg name="llm_model_name" default="Qwen/Qwen3-32B"/>
     <arg name="event_queue_max_tokens" default="8000"/>
     <arg name="continuous_queue_max_tokens" default="2000"/>
-    <arg name="event_topics" default="['/asr', '/user_commands', '/navigation_goals']"/>
-    <arg name="continuous_topics" default="['/vision', '/sensors', '/pose']"/>
+    <arg name="event_topics" default="['/asr', '/keyboard_input']"/>
+    <arg name="continuous_topics" default="['/mllm']"/>
     <arg name="long_term_memory_file_pth" default=""/>
 
     <!-- State Manager -->
