@@ -18,7 +18,7 @@ class TestActionDecisionActionServer:
 
     # Class-level variables for Docker container management
     docker_container_id = None
-    tgi_port = 5000
+    tgi_port = 8000
     tgi_url = f"http://localhost:{tgi_port}"
 
     @classmethod

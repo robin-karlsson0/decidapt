@@ -1,4 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <launch>
-    <node pkg="action_cycle_controller" exec="action_cycle_controller" name="action_cycle_controller"/>
+    <arg name="ac_freq" default="1.0" description="Frequency of the action cycle controller in Hz"/>
+    <arg name="tgi_server_url" default="http://localhost:8000" description="TGI server URL for LLM inference"/>
+    <arg name="max_tokens" default="1" description="Maximum tokens for Action Decision LLM output (single token)"/>
+    <arg name="llm_temp" default="0.0" description="Temperature for LLM next-token output distribution"/>
+    <arg name="llm_seed" default="14" description="Seed for reproducible LLM results"/>
+
+    <node pkg="action_cycle_controller" exec="action_decision" name="action_decision">
+        <param name="tgi_server_url" value="$(var tgi_server_url)"/>
+        <param name="max_tokens" value="$(var max_tokens)"/>
+        <param name="llm_temp" value="$(var llm_temp)"/>
+        <param name="llm_seed" value="$(var llm_seed)"/>
+    </node> 
+
+    <node pkg="action_cycle_controller" exec="action_cycle_controller" name="action_cycle_controller">
+        <param name="ac_freq" value="$(var ac_freq)"/>
+    </node>
 </launch>

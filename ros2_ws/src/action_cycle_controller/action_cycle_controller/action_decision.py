@@ -28,7 +28,7 @@ class ActionDecisionActionServer(Node):
         )
 
         # LLM inference params
-        self.declare_parameter('tgi_server_url', 'http://localhost:5000')
+        self.declare_parameter('tgi_server_url', 'http://localhost:8000')
         self.declare_parameter('max_tokens', 1)  # NOTE: Single token output
         self.declare_parameter('llm_temp', 0.0)
         self.declare_parameter('llm_seed', 14)
