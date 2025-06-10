@@ -83,6 +83,16 @@ source install/setup.bash
 colcon test --pytest-args="-s"
 ```
 
+# How to use
+
+Launch the Action Cycle Controller node with dependent packages using the launch file. Specify topics the State Manager will subscribe to and populate the state.
+
+Example:
+```bash
+ros2 launch action_cycle_controller action_cycle_controller_launch.xml \
+event_topics:='[/asr, /keyboard_input]' \
+continuous_topics:='[/mllm]'
+```
 
 # robot_action_controller
 
