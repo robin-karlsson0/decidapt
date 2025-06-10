@@ -1,3 +1,6 @@
+import os
+from glob import glob
+
 from setuptools import find_packages, setup
 
 package_name = 'state_manager'
@@ -10,6 +13,8 @@ setup(
         ('share/ament_index/resource_index/packages',
          ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        # Launch files
+        (os.path.join('share', package_name, 'launch'), glob('launch/*')),
     ],
     install_requires=[
         'setuptools',
@@ -18,10 +23,10 @@ setup(
         'transformers>=4.52.3',
     ],
     zip_safe=True,
-    maintainer='robin',
+    maintainer='Robin Karlsson',
     maintainer_email='robin.karlsson0@gmail.com',
     description='TODO: Package description',
-    license='TODO: License declaration',
+    license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
