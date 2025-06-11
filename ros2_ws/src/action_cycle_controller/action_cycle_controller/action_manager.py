@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from action_msgs.msg import GoalStatus
 from rclpy.action import ActionClient
+from std_msgs.msg import String
 
 
 @dataclass
@@ -331,13 +332,17 @@ class ActionManager:
         """Publish action event message to the action_event_pub."""
         if self.action_event_pub:
             status_msg = f'Action "{action_name}" is {action_result.value}'
-            self.action_event_pub.publish(status_msg)
+            msg = String()
+            msg.data = status_msg
+            self.action_event_pub.publish(msg)
 
     def publish_running_actions_msg(self):
         """Publish current action status to the action_running_pub."""
         if self.action_running_pub:
             running_actions_msg = self.create_running_action_msg()
-            self.action_running_pub.publish(running_actions_msg)
+            msg = String()
+            msg.data = running_actions_msg
+            self.action_running_pub.publish(msg)
 
     def create_running_action_msg(self) -> str:
         """Create a status message for the current running actions."""
