@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <launch>
+    <arg name="state_topic_name", default="/state"/>
     <arg name="llm_model_name" default="Qwen/Qwen3-32B"/>
     <arg name="event_queue_max_tokens" default="8000"/>
     <arg name="continuous_queue_max_tokens" default="2000"/>
@@ -9,6 +10,7 @@
     <arg name="state_file_pth" default=""/>
 
     <node pkg="state_manager" exec="state_manager" name="state_manager">
+        <param name="state_topic_name" value="$(var state_topic_name)"/>
         <param name="llm_model_name" value="$(var llm_model_name)"/>
         <param name="event_queue_max_tokens" value="$(var event_queue_max_tokens)"/>
         <param name="continuous_queue_max_tokens" value="$(var continuous_queue_max_tokens)"/>
