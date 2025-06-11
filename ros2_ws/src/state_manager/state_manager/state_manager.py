@@ -62,6 +62,7 @@ class StateManager(Node):
 
         # Parameters
         string_array_param = Parameter.Type.STRING_ARRAY
+        self.declare_parameter('state_topic_name', '/state')
         self.declare_parameter('llm_model_name', 'Qwen/Qwen3-32B')
         self.declare_parameter('event_queue_max_tokens', 8000)
         self.declare_parameter('continuous_queue_max_tokens', 2000)
@@ -70,19 +71,34 @@ class StateManager(Node):
         self.declare_parameter('long_term_memory_file_pth', '')
         self.declare_parameter('state_file_pth', '')
 
+        self.state_topic_name = self.get_parameter('state_topic_name').value
+        self.llm_model_name = self.get_parameter('llm_model_name').value
         self.event_queue_max_tokens = int(
             self.get_parameter('event_queue_max_tokens').value)
         self.continuous_queue_max_tokens = int(
             self.get_parameter('continuous_queue_max_tokens').value)
-
-        # LLM tokenizer for measuring state length
-        self.llm_model_name = self.get_parameter('llm_model_name').value
-        self.tokenizer = AutoTokenizer.from_pretrained(self.llm_model_name)
-
         # Topics to store to memory set by input parameters
         # Ex: string_topics_to_mem:="['/topic1', '/topic2', '/topic3']"
         self.event_topics = self.get_parameter('event_topics').value
         self.continuous_topics = self.get_parameter('continuous_topics').value
+        self.ltm_file_pth = self.get_parameter(
+            'long_term_memory_file_pth').value
+        self.state_file_pth = self.get_parameter('state_file_pth').value
+
+        self.get_logger().info(
+            'StateManager initializing\n'
+            'Parameters:\n'
+            f'  state_topic_name: {self.state_topic_name}\n'
+            f'  llm_model_name: {self.llm_model_name}\n'
+            f'  event_queue_max_tokens: {self.event_queue_max_tokens}\n'
+            f'  continuous_queue_max_tokens: {self.continuous_queue_max_tokens}\n'
+            f'  event_topics: {self.event_topics}\n'
+            f'  continuous_topics: {self.continuous_topics}\n'
+            f'  long_term_memory_file_pth: {self.ltm_file_pth}\n'
+            f'  state_file_pth: {self.state_file_pth}')
+
+        # LLM tokenizer for measuring state length
+        self.tokenizer = AutoTokenizer.from_pretrained(self.llm_model_name)
 
         if len(self.continuous_topics) == 0 and len(self.event_topics) == 0:
             self.get_logger().error(
@@ -103,9 +119,8 @@ class StateManager(Node):
         self.continuous_queue = deque()
 
         # Long-term memory file initialization
-        ltm_file_pth = self.get_parameter('long_term_memory_file_pth').value
-        if ltm_file_pth:
-            self.long_term_memory_file_pth = ltm_file_pth
+        if self.ltm_file_pth:
+            self.long_term_memory_file_pth = self.ltm_file_pth
             self.get_logger().info(
                 f'Writing Long-term memory to file: {self.long_term_memory_file_pth}'  # noqa
             )
@@ -121,7 +136,11 @@ class StateManager(Node):
         # Create QoS profile with transient local durability
         qos_profile = QoSProfile(
             depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
-        self.state_pub = self.create_publisher(String, '/state', qos_profile)
+        self.state_pub = self.create_publisher(
+            String,
+            self.state_topic_name,
+            qos_profile,
+        )
 
         # Publish initial state
         initial_state = self.get_state()
@@ -133,7 +152,6 @@ class StateManager(Node):
             f'Initial state length: {self.token_len(initial_state)} tokens')
 
         # Optional "state-to-file" functionality for easily observing state
-        self.state_file_pth = self.get_parameter('state_file_pth').value
         if self.state_file_pth:
             self.get_logger().info(
                 f'Writing state to file: {self.state_file_pth}')

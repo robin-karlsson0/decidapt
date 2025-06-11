@@ -346,7 +346,7 @@ class ActionManager:
 
     def create_running_action_msg(self) -> str:
         """Create a status message for the current running actions."""
-        status_msg = "Running actions:\n"
+        status_msg = 'Running actions:\n'
         with self.lock:
             for name in self.running_actions.keys():
                 status_msg += name
