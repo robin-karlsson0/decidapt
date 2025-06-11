@@ -14,6 +14,7 @@
     <arg name="event_topics" default="['/asr', '/keyboard_input']"/>
     <arg name="continuous_topics" default="['/mllm']"/>
     <arg name="long_term_memory_file_pth" default=""/>
+    <arg name="state_file_pth" default=""/>
 
     <!-- State Manager -->
     <include file="$(find-pkg-share state_manager)/launch/state_manager_launch.xml">
@@ -23,6 +24,7 @@
         <arg name="event_topics" value="$(var event_topics)"/>
         <arg name="continuous_topics" value="$(var continuous_topics)"/>
         <arg name="long_term_memory_file_pth" value="$(var long_term_memory_file_pth)"/>
+        <arg name="state_file_pth" value="$(var state_file_pth)"/>
     </include>
 
     <!-- Action Decision -->
@@ -31,7 +33,7 @@
         <param name="max_tokens" value="$(var max_tokens)"/>
         <param name="llm_temp" value="$(var llm_temp)"/>
         <param name="llm_seed" value="$(var llm_seed)"/>
-    </node> 
+    </node>
 
     <!-- Action Cycle Controller -->
     <node pkg="action_cycle_controller" exec="action_cycle_controller" name="action_cycle_controller">

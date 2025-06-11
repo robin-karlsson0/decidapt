@@ -6,6 +6,7 @@ import rclpy
 from exodapt_robot_pt import state_description_pt
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from std_msgs.msg import String
 from transformers import AutoTokenizer
 
@@ -67,6 +68,7 @@ class StateManager(Node):
         self.declare_parameter('event_topics', string_array_param)
         self.declare_parameter('continuous_topics', string_array_param)
         self.declare_parameter('long_term_memory_file_pth', '')
+        self.declare_parameter('state_file_pth', '')
 
         self.event_queue_max_tokens = int(
             self.get_parameter('event_queue_max_tokens').value)
@@ -116,7 +118,31 @@ class StateManager(Node):
         self.subscribers = []
         self._create_subscribers()
 
-        self.state_pub = self.create_publisher(String, '/state', 10)
+        # Create QoS profile with transient local durability
+        qos_profile = QoSProfile(
+            depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
+        self.state_pub = self.create_publisher(String, '/state', qos_profile)
+
+        # Publish initial state
+        initial_state = self.get_state()
+        initial_msg = String()
+        initial_msg.data = initial_state
+        self.state_pub.publish(initial_msg)
+        self.get_logger().info('Initial state published.')
+        self.get_logger().info(
+            f'Initial state length: {self.token_len(initial_state)} tokens')
+
+        # Optional "state-to-file" functionality for easily observing state
+        self.state_file_pth = self.get_parameter('state_file_pth').value
+        if self.state_file_pth:
+            self.get_logger().info(
+                f'Writing state to file: {self.state_file_pth}')
+            state = self.get_state()
+            with open(self.state_file_pth, 'w') as f:
+                f.write(state)
+        else:
+            self.state_file_pth = None
+            self.get_logger().info('No state file specified')
 
     def _create_subscribers(self):
         """Create subscribers for continuous and event-driven topics."""
@@ -217,8 +243,14 @@ class StateManager(Node):
     def _publish_state(self):
         """Publish the current state."""
         msg = String()
-        msg.data = self.get_state()
+        state = self.get_state()
+        msg.data = state
         self.state_pub.publish(msg)
+
+        # Optionally write state to file
+        if self.state_file_pth:
+            with open(self.state_file_pth, 'w') as f:
+                f.write(state)
 
     def create_state_header(self):
 

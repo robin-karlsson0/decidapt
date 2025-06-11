@@ -6,6 +6,7 @@ from ament_index_python.packages import get_package_share_directory
 from exodapt_robot_interfaces.action import ActionDecision
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from std_msgs.msg import String
 
 from .action_registry import ActionRegistry
@@ -99,11 +100,13 @@ class ActionCycleController(Node):
         # self.num_short_chunks = self.get_parameter('num_short_chunks').value
 
         self.state = ''
+        qos_profile = QoSProfile(
+            depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
         self.state_sub = self.create_subscription(
             String,
             'state',
             self.update_state_callback,
-            10,
+            qos_profile,
         )
 
         # Timer for action cycle [s]
