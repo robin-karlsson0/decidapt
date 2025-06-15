@@ -50,8 +50,10 @@ class StateManager(Node):
         ros2 run decidapt state_manager --ros-args \
             -p event_topics:="['/asr', '/user_commands', '/navigation_goals']" \
             -p continuous_topics:="['/vision', '/sensors', '/pose']" \
+            -p thought_topics:="['/agency', '/self_reflection']" \
             -p event_queue_max_tokens:=8000 \
-            -p continuous_queue_max_tokens:=2000
+            -p continuous_queue_max_tokens:=2000 \
+            -p thought_queue_max_tokens:=2000
 
     TODO:
         - LLM based state chunk filter functionality.
@@ -66,8 +68,10 @@ class StateManager(Node):
         self.declare_parameter('llm_model_name', 'Qwen/Qwen3-32B')
         self.declare_parameter('event_queue_max_tokens', 8000)
         self.declare_parameter('continuous_queue_max_tokens', 2000)
+        self.declare_parameter('thought_queue_max_tokens', 2000)
         self.declare_parameter('event_topics', string_array_param)
         self.declare_parameter('continuous_topics', string_array_param)
+        self.declare_parameter('thought_topics', string_array_param)
         self.declare_parameter('long_term_memory_file_pth', '')
         self.declare_parameter('state_file_pth', '')
 
@@ -77,10 +81,13 @@ class StateManager(Node):
             self.get_parameter('event_queue_max_tokens').value)
         self.continuous_queue_max_tokens = int(
             self.get_parameter('continuous_queue_max_tokens').value)
+        self.thought_queue_max_tokens = int(
+            self.get_parameter('thought_queue_max_tokens').value)
         # Topics to store to memory set by input parameters
         # Ex: string_topics_to_mem:="['/topic1', '/topic2', '/topic3']"
         self.event_topics = self.get_parameter('event_topics').value
         self.continuous_topics = self.get_parameter('continuous_topics').value
+        self.thought_topics = self.get_parameter('thought_topics').value
         self.ltm_file_pth = self.get_parameter(
             'long_term_memory_file_pth').value
         self.state_file_pth = self.get_parameter('state_file_pth').value
@@ -91,19 +98,23 @@ class StateManager(Node):
             f'  state_topic_name: {self.state_topic_name}\n'
             f'  llm_model_name: {self.llm_model_name}\n'
             f'  event_queue_max_tokens: {self.event_queue_max_tokens}\n'
-            f'  continuous_queue_max_tokens: {self.continuous_queue_max_tokens}\n'
+            f'  continuous_queue_max_tokens: {self.continuous_queue_max_tokens}\n'  # noqa
+            f'  thought_queue_max_tokens: {self.thought_queue_max_tokens}\n'
             f'  event_topics: {self.event_topics}\n'
             f'  continuous_topics: {self.continuous_topics}\n'
+            f'  thought_topics: {self.thought_topics}\n'
             f'  long_term_memory_file_pth: {self.ltm_file_pth}\n'
             f'  state_file_pth: {self.state_file_pth}')
 
         # LLM tokenizer for measuring state length
         self.tokenizer = AutoTokenizer.from_pretrained(self.llm_model_name)
 
-        if len(self.continuous_topics) == 0 and len(self.event_topics) == 0:
+        if len(self.continuous_topics) == 0 \
+                and len(self.event_topics) == 0 \
+                and len(self.thought_topics) == 0:
             self.get_logger().error(
                 'No topics specified. Use continuous_topics and/or event_topics parameters.\n',  # noqa
-                'Ex: continuous_topics:=\"[\'/vision\', \'/sensors\']\" event_topics:=\"[\'/asr\', \'/commands\']\"'  # noqa
+                'Ex: continuous_topics:=\"[\'/vision\', \'/sensors\']\" event_topics:=\"[\'/asr\', \'/commands\', thought_topics:=\"\'/agency\'\"]\"'  # noqa
             )
             raise Exception()
 
@@ -117,6 +128,7 @@ class StateManager(Node):
         # Queue stores (state_chunk, timestamp, token_length) tuples
         self.event_queue = deque()
         self.continuous_queue = deque()
+        self.thought_queue = deque()
 
         # Long-term memory file initialization
         if self.ltm_file_pth:
@@ -184,6 +196,16 @@ class StateManager(Node):
                                          continuous_msg_callback(msg, topic),
                                          10))
 
+        # Thought topics
+        for topic in self.thought_topics:
+            self.get_logger().info(f'Subscribing to thought topic: {topic}')
+            self.subscribers.append(
+                self.create_subscription(String,
+                                         topic,
+                                         lambda msg, topic=topic: self.
+                                         thought_msg_callback(msg, topic),
+                                         10))
+
     def event_msg_callback(self, msg, topic):
         """Handle event topic messages (token-limited FIFO queue)."""
         msg_ts = self.get_clock().now().to_msg()
@@ -236,6 +258,32 @@ class StateManager(Node):
             f'Added continuous state chunk from {topic}. Popped {popped_chunks} chunks.'  # noqa
         )
 
+    def thought_msg_callback(self, msg, topic):
+        """Handle thought topic messages (token-limited FIFO queue)."""
+        msg_ts = self.get_clock().now().to_msg()
+        msg_ts_str = datetime.fromtimestamp(
+            msg_ts.sec).strftime('%Y-%m-%d %H:%M:%S')
+        timestamp = msg_ts.sec + msg_ts.nanosec * 1e-9
+
+        state_chunk_str = self.format_state_chunk(topic, msg_ts_str, msg.data)
+        token_len = self.token_len(state_chunk_str)
+
+        # Add to continuous queue with timestamp and token tracking
+        self.thought_queue.append((state_chunk_str, timestamp, token_len))
+
+        # Trim continuous queue if it exceeds token limit
+        popped_chunks = self._trim_thought_queue()
+
+        # Write to long-term memory
+        if self.long_term_memory_file_pth:
+            with open(self.long_term_memory_file_pth, 'a') as f:
+                f.write(self.format_state_chunk(topic, msg_ts_str, msg.data))
+
+        self._publish_state()
+        self.get_logger().info(
+            f'Added thought state chunk from {topic}. Popped {popped_chunks} chunks.'  # noqa
+        )
+
     def _trim_event_queue(self) -> int:
         """Trim the event queue if it exceeds the maximum token length."""
         popped_chunks = 0
@@ -254,6 +302,17 @@ class StateManager(Node):
             item[2] for item in self.continuous_queue)  # Sum token lengths
         while total_tokens > self.continuous_queue_max_tokens and self.continuous_queue:  # noqa
             removed_item = self.continuous_queue.popleft()
+            total_tokens -= removed_item[2]
+            popped_chunks += 1
+        return popped_chunks
+
+    def _trim_thought_queue(self) -> int:
+        """Trim the thought queue if it exceeds the maximum token length."""
+        popped_chunks = 0
+        total_tokens = sum(item[2]
+                           for item in self.thought_queue)  # Sum token lengths
+        while total_tokens > self.thought_queue_max_tokens and self.thought_queue:  # noqa
+            removed_item = self.thought_queue.popleft()
             total_tokens -= removed_item[2]
             popped_chunks += 1
         return popped_chunks
@@ -323,6 +382,10 @@ class StateManager(Node):
 
         # Add continuous queue chunks
         for chunk_str, timestamp, _ in self.continuous_queue:
+            all_chunks.append((chunk_str, timestamp))
+
+        # Add thought queue chunks
+        for chunk_str, timestamp, _ in self.thought_queue:
             all_chunks.append((chunk_str, timestamp))
 
         # Sort by timestamp (oldest first)

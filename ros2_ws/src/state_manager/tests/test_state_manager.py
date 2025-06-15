@@ -1,9 +1,5 @@
-from datetime import datetime
-from unittest.mock import MagicMock, patch
-
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
-from rclpy.node import Node
 from rclpy.parameter import Parameter
 from state_manager.state_manager import StateManager
 from std_msgs.msg import String
@@ -52,9 +48,13 @@ class TestStateManager:
                       ['/asr', '/thought', '/reply_action']),
             Parameter('continuous_topics', Parameter.Type.STRING_ARRAY,
                       ['/mllm', '/face_recognition']),
+            Parameter('thought_topics', Parameter.Type.STRING_ARRAY, [
+                '/agency',
+            ]),
             Parameter('event_queue_max_tokens', Parameter.Type.INTEGER, 500),
             Parameter('continuous_queue_max_tokens', Parameter.Type.INTEGER,
                       400),
+            Parameter('thought_queue_max_tokens', Parameter.Type.INTEGER, 400),
             Parameter('llm_model_name', Parameter.Type.STRING,
                       'Qwen/Qwen3-32B'),
             Parameter('long_term_memory_file_pth', Parameter.Type.STRING,
@@ -145,7 +145,7 @@ class TestStateManager:
 
         assert len(self.state_manager.continuous_queue) == 2
         assert 'Test MLLM message' in self.state_manager.continuous_queue[0][0]
-        assert 'Test Face Recognition message' in self.state_manager.continuous_queue[
+        assert 'Test Face Recognition message' in self.state_manager.continuous_queue[  # noqa: E501
             1][0]
 
         # Cleanup
@@ -153,6 +153,31 @@ class TestStateManager:
         self.executor.remove_node(face_recognition_node)
         mllm_node.destroy_node()
         face_recognition_node.destroy_node()
+
+    def test_state_manager_thought_subscriptions(self):
+        """Test that thought topics are properly subscribed to."""
+        # Initialize StateManager with custom parameters
+        test_params = self.create_test_parameters()
+        self.state_manager = StateManager(parameter_overrides=test_params)
+        self.executor.add_node(self.state_manager)
+
+        # Initialize mock publishers
+        thought_node = rclpy.create_node('thought_publisher')
+        thought_publisher = thought_node.create_publisher(
+            String, '/agency', 10)
+
+        self.executor.add_node(thought_node)
+
+        thought_publisher.publish(String(data='Test Thought message'))
+
+        self.executor.spin_once(timeout_sec=0.1)
+
+        assert len(self.state_manager.thought_queue) == 1
+        assert 'Test Thought message' in self.state_manager.thought_queue[0][0]
+
+        # Cleanup
+        self.executor.remove_node(thought_node)
+        thought_node.destroy_node()
 
     def test_state_manager_state_token_lengths(self):
         """Test that number of tokens are counted correctly."""
@@ -169,6 +194,11 @@ class TestStateManager:
         asr_publisher = asr_node.create_publisher(String, '/asr', 10)
         self.executor.add_node(asr_node)
 
+        thought_node = rclpy.create_node('thought_publisher')
+        thought_publisher = thought_node.create_publisher(
+            String, '/agency', 10)
+        self.executor.add_node(thought_node)
+
         #################
         #  Event queue
         #################
@@ -176,8 +206,17 @@ class TestStateManager:
             asr_publisher.publish(String(data=f'Test ASR message {idx}'))
             self.executor.spin_once(timeout_sec=0.1)
 
-        # Check that all messages are in the event queue
+        #################
+        #  Thought queue
+        #################
+        for idx in range(5):
+            thought_publisher.publish(
+                String(data=f'Test thought message {idx}'))
+            self.executor.spin_once(timeout_sec=0.1)
+
+        # Check that all messages are in the queues
         assert len(self.state_manager.event_queue) == 10
+        assert len(self.state_manager.thought_queue) == 5
 
         # Test that len() state representation token length is correct
         state = self.state_manager.get_state()
@@ -188,7 +227,7 @@ class TestStateManager:
         asr_node.destroy_node()
 
     def test_state_manager_queue_trimming(self):
-        """Test that queue trimming works correctly for both event and continuous queues."""
+        """Test that queue trimming works correctly for all queues."""
         # Initialize StateManager with small token limits for easier testing
         test_params = self.create_test_parameters()
         self.state_manager = StateManager(parameter_overrides=test_params)
@@ -197,12 +236,16 @@ class TestStateManager:
         # Initialize mock publishers
         asr_node = rclpy.create_node('asr_publisher')
         mllm_node = rclpy.create_node('mllm_publisher')
+        thought_node = rclpy.create_node('thought_publisher')
 
         asr_publisher = asr_node.create_publisher(String, '/asr', 10)
         mllm_publisher = mllm_node.create_publisher(String, '/mllm', 10)
+        thought_publisher = thought_node.create_publisher(
+            String, '/agency', 10)
 
         self.executor.add_node(asr_node)
         self.executor.add_node(mllm_node)
+        self.executor.add_node(thought_node)
 
         ##############################
         # Test event queue trimming
@@ -346,6 +389,69 @@ class TestStateManager:
         if len(self.state_manager.continuous_queue) > 0:
             last_chunk = self.state_manager.continuous_queue[-1][0]
             assert 'Large test MLLM message' in last_chunk, \
+                "Newest messages should be retained"
+
+        ###############################
+        # Test thought queue trimming
+        ###############################
+
+        # Start with empty thought queue
+        assert len(self.state_manager.thought_queue) == 0, \
+            'Thought queue should be empty'
+
+        # Add messages until we exceed the token limit
+        message_count = 0
+        total_tokens = 0
+
+        # Keep adding messages until we start trimming
+        while total_tokens < self.state_manager.thought_queue_max_tokens:
+            test_message = f'Test agency message {message_count}'
+            thought_publisher.publish(String(data=test_message))
+            self.executor.spin_once(timeout_sec=0.1)
+
+            total_tokens += self.state_manager.thought_queue[-1][2]
+            message_count += 1
+
+            # Safety check to avoid infinite loop
+            if message_count > 50:
+                break
+
+        initial_queue_size = len(self.state_manager.thought_queue)
+        print(f"Thought queue size before trimming: {initial_queue_size}")
+        print(f"Total tokens in thought queue before trimming: {total_tokens}")
+        print(f"Max tokens allowed in thought queue: \
+                {self.state_manager.thought_queue_max_tokens}")
+
+        # Verify queue is at or near capacity
+        current_tokens = self.get_token_length_from_queue(
+            self.state_manager.thought_queue)
+        assert current_tokens <= self.state_manager.thought_queue_max_tokens, \
+            'Thought queue should be at or near capacity'
+
+        # Add several more messages to trigger trimming
+        for i in range(5):
+            test_message = f'Large test agency message {i} ' * 10
+            thought_publisher.publish(String(data=test_message))
+            self.executor.spin_once(timeout_sec=0.1)
+
+        # Verify trimming occurred
+        final_queue_size = len(self.state_manager.thought_queue)
+        print(f"Final thought queue size after trimming: {final_queue_size}")
+
+        # Queue should have been trimmed
+        assert final_queue_size <= initial_queue_size, \
+            "Thought queue should have been trimmed"
+
+        # Verify token limit is still respected
+        final_tokens = self.get_token_length_from_queue(
+            self.state_manager.thought_queue)
+        assert final_tokens <= self.state_manager.thought_queue_max_tokens, \
+            'Thought queue token limit should still be respected'
+
+        # Verify that newest messages are kept (FIFO - oldest removed first)
+        if len(self.state_manager.thought_queue) > 0:
+            last_chunk = self.state_manager.thought_queue[-1][0]
+            assert 'Large test agency message' in last_chunk, \
                 "Newest messages should be retained"
 
         #################
