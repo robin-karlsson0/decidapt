@@ -2,6 +2,10 @@
 <launch>
     <!-- ARGs: Action Cycle Controller -->
     <arg name="ac_freq" default="1.0" description="Frequency of the action cycle controller in Hz"/>
+    <arg name="action_config" default='config/actions.yaml' description="Relative path to the action configuration file"/>
+    <arg name="action_event_topic" default="/action_event" description="Topic for action events"/>
+    <arg name="action_running_topic" default="/action_running" description="Topic for running actions status msg"/>
+    <arg name="status_topic" default="/state" description="Topic for the state manager status message"/>
     <!-- ARGs: Action Decision-->
     <arg name="tgi_server_url" default="http://localhost:8000" description="TGI server URL for LLM inference"/>
     <arg name="max_tokens" default="1" description="Maximum tokens for Action Decision LLM output (single token)"/>
@@ -11,8 +15,11 @@
     <arg name="llm_model_name" default="Qwen/Qwen3-32B"/>
     <arg name="event_queue_max_tokens" default="8000"/>
     <arg name="continuous_queue_max_tokens" default="2000"/>
+    <arg name="thought_queue_max_tokens" default="2000"/>
     <arg name="event_topics" default="['/asr', '/keyboard_input']"/>
     <arg name="continuous_topics" default="['/mllm']"/>
+    <arg name="thought_topics" default="['/agency', '/plan']"/>
+    <arg name="action_running_topic" default="/action_running"/>
     <arg name="long_term_memory_file_pth" default=""/>
     <arg name="state_file_pth" default=""/>
 
@@ -21,8 +28,11 @@
         <arg name="llm_model_name" value="$(var llm_model_name)"/>
         <arg name="event_queue_max_tokens" value="$(var event_queue_max_tokens)"/>
         <arg name="continuous_queue_max_tokens" value="$(var continuous_queue_max_tokens)"/>
+        <arg name="thought_queue_max_tokens" value="$(var thought_queue_max_tokens)"/>
         <arg name="event_topics" value="$(var event_topics)"/>
         <arg name="continuous_topics" value="$(var continuous_topics)"/>
+        <arg name="thought_topics" value="$(var thought_topics)"/>
+        <arg name="action_running_topic" value="$(var action_running_topic)"/>
         <arg name="long_term_memory_file_pth" value="$(var long_term_memory_file_pth)"/>
         <arg name="state_file_pth" value="$(var state_file_pth)"/>
     </include>
@@ -38,5 +48,9 @@
     <!-- Action Cycle Controller -->
     <node pkg="action_cycle_controller" exec="action_cycle_controller" name="action_cycle_controller">
         <param name="ac_freq" value="$(var ac_freq)"/>
+        <param name="action_config" value="$(var ac_freq)"/>
+        <param name="action_event_topic" value="$(var action_event_topic)"/>
+        <param name="action_running_topic" value="$(var action_running_topic)"/>
+        <param name="status_topic" value="$(var status_topic)"/>
     </node>
 </launch>

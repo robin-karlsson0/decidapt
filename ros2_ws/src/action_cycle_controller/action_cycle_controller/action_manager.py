@@ -227,8 +227,8 @@ class ActionManager:
                     lambda f: self._handle_result(action_name, f))
 
                 # Update action status when action is accepted
-                self.publish_action_event_msg(action_name,
-                                              ActionResult.SUBMITTED)
+                # self.publish_action_event_msg(action_name,
+                #                               ActionResult.SUBMITTED)
                 self.publish_running_actions_msg()
             else:
                 self._complete_action(action_name, ActionResult.REJECTED)
@@ -282,7 +282,7 @@ class ActionManager:
             del self.running_actions[action_name]
 
         # Update action status when action is completed
-        self.publish_action_event_msg(action_name, result)
+        # self.publish_action_event_msg(action_name, result)
         self.publish_running_actions_msg()
 
         # Execute callback outside lock
