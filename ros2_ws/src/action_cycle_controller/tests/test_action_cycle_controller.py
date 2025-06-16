@@ -6,6 +6,7 @@ from action_cycle_controller.action_cycle_controller import \
     ActionCycleController
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.parameter import Parameter
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from std_msgs.msg import String
 
 
@@ -321,10 +322,14 @@ class TestActionCycleController:
         self.executor.add_node(self.action_cycle_controller)
 
         # Create state publisher
+        qos_profile = QoSProfile(
+            depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
         state_publisher_node = rclpy.create_node('state_publisher')
         state_publisher = state_publisher_node.create_publisher(
-            String, 'state', 10)
+            String, '/state', qos_profile)
         self.executor.add_node(state_publisher_node)
+
+        assert self.action_cycle_controller.state_topic == '/state'
 
         # Publish state message
         state_msg = String()
@@ -332,6 +337,7 @@ class TestActionCycleController:
         state_publisher.publish(state_msg)
 
         # Process message
+        self.executor.spin_once(timeout_sec=0.1)
         self.executor.spin_once(timeout_sec=0.1)
 
         # Verify state was updated

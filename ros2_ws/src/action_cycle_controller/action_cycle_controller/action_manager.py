@@ -125,20 +125,24 @@ class ActionManager:
         self.running_actions = {}  # action_name -> ActionState
         self.lock = threading.Lock()
 
+        self.action_keys = {}  # action_name -> action_key
+
     def register_action(
         self,
-        name,
+        action_name,
         action_type,
+        action_key: str,
         timeout=60.0,
         max_concurrent=1,
     ):
         """Register action with metadata."""
         config = ActionClientConfig(
-            client=ActionClient(self.node, action_type, name),
+            client=ActionClient(self.node, action_type, action_name),
             timeout=timeout,
             max_concurrent=max_concurrent,
         )
-        self.action_registry[name] = config
+        self.action_registry[action_name] = config
+        self.action_keys[action_name] = action_key
 
     def submit_action(self, action_name, goal, callback=None) -> ActionResult:
         """Queue and execute action with validation.
@@ -348,6 +352,7 @@ class ActionManager:
         """Create a status message for the current running actions."""
         status_msg = 'Running actions:\n'
         with self.lock:
-            for name in self.running_actions.keys():
-                status_msg += f'{name}'
+            for action_name in self.running_actions.keys():
+                action_key = self.action_keys[action_name]
+                status_msg += f'{action_name} (action_key \'{action_key}\')'
         return status_msg

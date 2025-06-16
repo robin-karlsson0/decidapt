@@ -96,14 +96,15 @@ class BaseAction(ABC):
         # Handle single action server
         if 'action_server' in self.config:
             server_name = self.config['action_server']
-            action_type_str = self.config.get('action_type')
+            action_type_str = self.config['action_type']
+            action_key = self.config['action_key']
             if action_type_str:
                 try:
                     # Resolve string to actual action type
                     action_type = self._resolve_action_type(action_type_str)
 
                     self.action_manager.register_action(
-                        server_name, action_type)
+                        server_name, action_type, action_key)
                     self.node.get_logger().info(
                         f"Registered action server: {server_name} for {self.get_action_name()}"  # noqa: E501
                     )

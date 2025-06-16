@@ -167,7 +167,12 @@ def action_manager(mock_action_client):
     """
     node = MagicMock()
     manager = ActionManager(node)
-    manager.register_action('dummy_action', MagicMock(), timeout=5.0)
+    manager.register_action(
+        'dummy_action',
+        MagicMock(),
+        'dummy_key',
+        timeout=5.0,
+    )
     return manager
 
 
@@ -410,8 +415,18 @@ def test_cancel_all_running_actions(action_manager, mock_action_client):
     3. Internal state is cleaned up for all actions
     """
     # Register additional test actions
-    action_manager.register_action('action_1', MagicMock(), timeout=5.0)
-    action_manager.register_action('action_2', MagicMock(), timeout=5.0)
+    action_manager.register_action(
+        'action_1',
+        MagicMock(),
+        'action_key_1',
+        timeout=5.0,
+    )
+    action_manager.register_action(
+        'action_2',
+        MagicMock(),
+        'action_key_2',
+        timeout=5.0,
+    )
 
     # Setup mocks for multiple actions
     callbacks = []

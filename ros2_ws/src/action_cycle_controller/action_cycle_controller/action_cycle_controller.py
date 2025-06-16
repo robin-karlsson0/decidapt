@@ -81,6 +81,7 @@ class ActionCycleController(Node):
         self.declare_parameter('actions_config', 'config/actions.yaml')
         self.declare_parameter('action_event_topic', '/action_event')
         self.declare_parameter('action_running_topic', '/action_running')
+        self.declare_parameter('state_topic', '/state')
 
         self.ac_loop_freq = float(self.get_parameter('ac_freq').value)
         action_config_relative = self.get_parameter('actions_config').value
@@ -88,6 +89,7 @@ class ActionCycleController(Node):
             'action_event_topic').value
         self.action_running_topic = self.get_parameter(
             'action_running_topic').value
+        self.state_topic = self.get_parameter('state_topic').value
 
         self.get_logger().info(
             'ActionCycleController initializing\n'
@@ -118,7 +120,7 @@ class ActionCycleController(Node):
             depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
         self.state_sub = self.create_subscription(
             String,
-            'state',
+            self.state_topic,
             self.update_state_callback,
             qos_profile,
         )

@@ -221,7 +221,7 @@ class TestActionDecisionActionServer:
 
             # Create test goal
             goal_msg = ActionDecision.Goal()
-            goal_msg.state = "Test robot state: robot is idle, no obstacles detected"  # noqa: E501
+            goal_msg.state = "Test robot state: robot is idle. Take action to continue be idle."  # noqa: E501
             goal_msg.valid_actions = 'a: [Idle action] A no-operation action that represents a decision to remain idle.'  # noqa: E501
 
             # Send goal
