@@ -1,11 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <launch>
-    <arg name="state_topic_name", default="/state"/>
+    <arg name="state_topic_name" default="/state"/>
     <arg name="llm_model_name" default="Qwen/Qwen3-32B"/>
     <arg name="event_queue_max_tokens" default="8000"/>
     <arg name="continuous_queue_max_tokens" default="2000"/>
     <arg name="event_topics" default="['/asr', '/user_commands', '/navigation_goals']"/>
     <arg name="continuous_topics" default="['/vision', '/sensors', '/pose']"/>
+    <arg name="thought_topics" default="['/agency', '/plan']"/>
+    <arg name="action_running_topic" default="/action_running"/>
     <arg name="long_term_memory_file_pth" default=""/>
     <arg name="state_file_pth" default=""/>
 
@@ -16,6 +18,8 @@
         <param name="continuous_queue_max_tokens" value="$(var continuous_queue_max_tokens)"/>
         <param name="event_topics" value="$(var event_topics)"/>
         <param name="continuous_topics" value="$(var continuous_topics)"/>
+        <param name="thought_topics" value="$(var thought_topics)"/>
+        <param name="action_running_topic" value="$(var action_running_topic)"/>
         <param name="long_term_memory_file_pth" value="$(var long_term_memory_file_pth)"/>
         <param name="state_file_pth" value="$(var state_file_pth)"/>
     </node>

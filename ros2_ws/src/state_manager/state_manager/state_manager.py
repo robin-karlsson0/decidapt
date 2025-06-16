@@ -72,6 +72,7 @@ class StateManager(Node):
         self.declare_parameter('event_topics', string_array_param)
         self.declare_parameter('continuous_topics', string_array_param)
         self.declare_parameter('thought_topics', string_array_param)
+        self.declare_parameter('action_running_topic', '/action_running')
         self.declare_parameter('long_term_memory_file_pth', '')
         self.declare_parameter('state_file_pth', '')
 
@@ -88,6 +89,8 @@ class StateManager(Node):
         self.event_topics = self.get_parameter('event_topics').value
         self.continuous_topics = self.get_parameter('continuous_topics').value
         self.thought_topics = self.get_parameter('thought_topics').value
+        self.action_running_topic = self.get_parameter(
+            'action_running_topic').value
         self.ltm_file_pth = self.get_parameter(
             'long_term_memory_file_pth').value
         self.state_file_pth = self.get_parameter('state_file_pth').value
@@ -103,6 +106,7 @@ class StateManager(Node):
             f'  event_topics: {self.event_topics}\n'
             f'  continuous_topics: {self.continuous_topics}\n'
             f'  thought_topics: {self.thought_topics}\n'
+            f'  action_running_topic: {self.action_running_topic}\n'
             f'  long_term_memory_file_pth: {self.ltm_file_pth}\n'
             f'  state_file_pth: {self.state_file_pth}')
 
@@ -144,6 +148,15 @@ class StateManager(Node):
         # Create subscribers for both queue types
         self.subscribers = []
         self._create_subscribers()
+
+        # Create running actions subscriber
+        self.running_action_sub = self.create_subscription(
+            String,
+            self.action_running_topic,
+            self._action_running_sub_callback,
+            10,
+        )
+        self.running_actions = ''
 
         # Create QoS profile with transient local durability
         qos_profile = QoSProfile(
@@ -317,6 +330,10 @@ class StateManager(Node):
             popped_chunks += 1
         return popped_chunks
 
+    def _action_running_sub_callback(self, msg):
+        """Stores latest running actions msg in the state."""
+        self.running_actions = msg.data
+
     def _publish_state(self):
         """Publish the current state."""
         msg = String()
@@ -396,6 +413,11 @@ class StateManager(Node):
         for chunk_str, _ in all_chunks:
             state += chunk_str
         state += '\n</state_chunks>'
+
+        # Add running actions
+        state += '\n\n<running_actions>'
+        state += self.running_actions
+        state += '\n</running_actions>'
 
         return state
 

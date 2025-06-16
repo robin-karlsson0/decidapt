@@ -349,5 +349,5 @@ class ActionManager:
         status_msg = 'Running actions:\n'
         with self.lock:
             for name in self.running_actions.keys():
-                status_msg += name
+                status_msg += f'{name}'
         return status_msg

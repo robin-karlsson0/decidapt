@@ -79,9 +79,23 @@ class ActionCycleController(Node):
 
         self.declare_parameter('ac_freq', 1.0)
         self.declare_parameter('actions_config', 'config/actions.yaml')
+        self.declare_parameter('action_event_topic', '/action_event')
+        self.declare_parameter('action_running_topic', '/action_running')
 
         self.ac_loop_freq = float(self.get_parameter('ac_freq').value)
         action_config_relative = self.get_parameter('actions_config').value
+        self.action_event_topic = self.get_parameter(
+            'action_event_topic').value
+        self.action_running_topic = self.get_parameter(
+            'action_running_topic').value
+
+        self.get_logger().info(
+            'ActionCycleController initializing\n'
+            'Parameters:\n'
+            f'  ac_freq: {self.ac_loop_freq}\n'
+            f'  actions_config: {action_config_relative}\n'
+            f'  action_event_topic: {self.action_event_topic}\n'
+            f'  action_running_topic: {self.action_running_topic}')
 
         # Resolve the full path to the config file
         if os.path.isabs(action_config_relative):
