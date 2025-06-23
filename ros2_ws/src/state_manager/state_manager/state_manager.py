@@ -3,7 +3,7 @@ from collections import deque
 from datetime import datetime
 
 import rclpy
-from exodapt_robot_pt import state_description_pt
+from exodapt_robot_pt import state_representation_pt
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
@@ -121,9 +121,6 @@ class StateManager(Node):
                 'Ex: continuous_topics:=\"[\'/vision\', \'/sensors\']\" event_topics:=\"[\'/asr\', \'/commands\', thought_topics:=\"\'/agency\'\"]\"'  # noqa
             )
             raise Exception()
-
-        self.state_header = self.create_state_header()
-        self.state_header_len = self.token_len(self.state_header)
 
         # Retrieved from long-term memory
         self.state_retr_mem = ''
@@ -346,18 +343,6 @@ class StateManager(Node):
             with open(self.state_file_pth, 'w') as f:
                 f.write(state)
 
-    def create_state_header(self):
-
-        # TODO Current goal state read from topic?
-        goal_state = 'Current task goal: ' + \
-            'Follow instructions from the user to help users with task. ' + \
-            'Provide information and assistance as needed.\n' + \
-            '\n'
-
-        state_descr = state_description_pt()
-
-        return goal_state + state_descr
-
     @staticmethod
     def format_state_chunk(topic: str, ts: str, data: str) -> str:
         """Format a state chunk as a string.
@@ -376,20 +361,9 @@ class StateManager(Node):
 
     def get_state(self) -> str:
         """Return the state as a string with chunks ordered by timestamp."""
-        state = ''
-        # Header
-        state += '<state_header>\n'
-        state += self.state_header
-        state += '</state_header>\n\n'
-        # Retrieved memory
-        state += '<retrieved_memory>\n'
-        state += self.state_retr_mem
-        state += '</retrieved_memory>\n\n'
-        # Visual information
-        # state += '<visual_information>'
-        # state += self.get_visual_information()
-        # state += '</visual_information>\n\n'
-
+        ##################
+        #  State chunks
+        ##################
         # Merge and sort chunks from both queues by timestamp
         all_chunks = []
 
@@ -409,15 +383,30 @@ class StateManager(Node):
         all_chunks.sort(key=lambda x: x[1])
 
         # Add sorted chunks to state
-        state += '<state_chunks>'
+        state_chunks = []
         for chunk_str, _ in all_chunks:
-            state += chunk_str
-        state += '\n</state_chunks>'
+            state_chunks.append(chunk_str)
+        state_chunks = '\n'.join(state_chunks)
 
-        # Add running actions
-        state += '\n\n<running_actions>'
-        state += self.running_actions
-        state += '\n</running_actions>'
+        ##########################
+        #  State representation
+        ##########################
+        # TODO Components
+        situation_assessment = ''
+        current_context_summary = ''
+        personality_static = ''
+        personality_dynamic = ''
+        retrieved_mem = ''
+
+        state = state_representation_pt(
+            situation_assessment,
+            current_context_summary,
+            personality_static,
+            personality_dynamic,
+            retrieved_mem,
+            state_chunks,
+            self.running_actions,
+        )
 
         return state
 
