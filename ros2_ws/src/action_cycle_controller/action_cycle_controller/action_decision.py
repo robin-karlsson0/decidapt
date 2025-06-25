@@ -211,7 +211,7 @@ class ActionDecisionActionServer(Node):
 
         # Write prediction IO example to file
         if self.log_pred_io_pth:
-            self.log_pred_io(llm_input, pred_action, dt)
+            await self.log_pred_io(llm_input, pred_action, dt)
 
         return result
 
