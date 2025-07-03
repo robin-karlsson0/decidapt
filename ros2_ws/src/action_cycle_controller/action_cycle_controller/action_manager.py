@@ -121,28 +121,76 @@ class ActionManager:
         self.node = node
         self.action_event_pub = action_event_pub
         self.action_running_pub = action_running_pub
-        self.action_registry = {}  # action_name -> ActionClientConfig
-        self.running_actions = {}  # action_name -> ActionState
+        self.action_registry = {}  # action_server_name -> ActionClientConfig
+        self.running_actions = {}  # action_server_name -> ActionState
         self.lock = threading.Lock()
 
-        self.action_keys = {}  # action_name -> action_key
+        # Dicts mapping Action Server information
+        self.action_keys = {}  # action_server_name -> key
+        self.action_names = {}  # action_server_name --> name
+        self.action_descriptions = {}  # action_server_name --> description
+        self.running_descriptions = {}  # action_server_name --> running descr.
+        self.cancel_descriptions = {}  # action_server_name --> cancel descr.
 
     def register_action(
         self,
-        action_name,
+        action_server_name,
         action_type,
         action_key: str,
+        action_name: str = '',
+        action_description: str = '',
+        running_description: str = '',
+        cancel_description: str = '',
         timeout=60.0,
         max_concurrent=1,
     ):
         """Register action with metadata."""
         config = ActionClientConfig(
-            client=ActionClient(self.node, action_type, action_name),
+            client=ActionClient(self.node, action_type, action_server_name),
             timeout=timeout,
             max_concurrent=max_concurrent,
         )
-        self.action_registry[action_name] = config
-        self.action_keys[action_name] = action_key
+        self.action_registry[action_server_name] = config
+        self.action_keys[action_server_name] = action_key
+        self.action_names[action_server_name] = action_name
+        self.action_descriptions[action_server_name] = action_description
+        self.running_descriptions[action_server_name] = running_description
+        self.cancel_descriptions[action_server_name] = cancel_description
+
+    def register_virtual_action(
+        self,
+        virtual_server_name: str,
+        action_key: str,
+        action_name: str = '',
+        action_description: str = '',
+        running_description: str = '',
+        cancel_description: str = '',
+    ):
+        """Register a virtual action that doesn't need a real action server.
+
+        This method allows actions like IdleAction to be registered in the
+        ActionManager without requiring a real ROS 2 action server. Virtual
+        actions are included in the valid actions list and can be executed
+        directly without going through the action server infrastructure.
+
+        Args:
+            virtual_server_name (str): Unique name for the virtual action server
+            action_key (str): Single character key for the action
+            action_name (str): Human-readable name for the action
+            action_description (str): Description of what the action does
+            running_description (str): Description of what happens when running
+            cancel_description (str): Description of what happens when canceled
+        """
+        # Store metadata without creating an actual ActionClient
+        self.action_keys[virtual_server_name] = action_key
+        self.action_names[virtual_server_name] = action_name
+        self.action_descriptions[virtual_server_name] = action_description
+        self.running_descriptions[virtual_server_name] = running_description
+        self.cancel_descriptions[virtual_server_name] = cancel_description
+
+        # Mark this as a virtual action in the registry
+        # We don't create an ActionClientConfig since no real client is needed
+        self.action_registry[virtual_server_name] = None
 
     def submit_action(self, action_name, goal, callback=None) -> ActionResult:
         """Queue and execute action with validation.
@@ -171,7 +219,10 @@ class ActionManager:
                 self.cancel_action(action_name)
 
             # Stores particular action state
-            expiry_t = time.time() + self.action_registry[action_name].timeout
+            config = self.action_registry[action_name]
+            # Handle virtual actions (config is None) with default timeout
+            timeout = config.timeout if config is not None else 60.0
+            expiry_t = time.time() + timeout
             state = ActionState(
                 name=action_name,
                 goal=goal,
@@ -193,8 +244,16 @@ class ActionManager:
             ActionResult: Resulting state of action execution.
         """
         try:
-            # Unpack ActionClient for current action
+            # Get the client configuration
             client_config = self.action_registry[state.name]
+
+            # Handle virtual actions (config is None)
+            if client_config is None:
+                # Virtual actions complete immediately
+                self._complete_action(state.name, ActionResult.SUCCESS, None)
+                return ActionResult.SUCCESS
+
+            # Unpack ActionClient for current action
             client = client_config.client
 
             # Asynchronously execute action through ActionClient
@@ -282,7 +341,6 @@ class ActionManager:
             del self.running_actions[action_name]
 
         # Update action status when action is completed
-        # self.publish_action_event_msg(action_name, result)
         self.publish_running_actions_msg()
 
         # Execute callback outside lock
@@ -299,6 +357,12 @@ class ActionManager:
             return False
 
         config = self.action_registry[action_name]
+
+        # Handle virtual actions (config is None)
+        if config is None:
+            # Virtual actions can always be executed (no concurrency limits)
+            return True
+
         running_count = sum(1 for s in self.running_actions.values()
                             if s.name == action_name)
 
@@ -349,10 +413,70 @@ class ActionManager:
             self.action_running_pub.publish(msg)
 
     def create_running_action_msg(self) -> str:
-        """Create a status message for the current running actions."""
-        status_msg = 'Running actions:\n'
+        """Create a status message for the current running actions.
+        
+        Message format
+            action_key: [action_name] running_description
+        
+        Message format example:
+            b: [Reply action] Robot is currently generating a reply to respond to user interaction
+        
+        """  # noqa E501
+        msg = []
         with self.lock:
-            for action_name in self.running_actions.keys():
-                action_key = self.action_keys[action_name]
-                status_msg += f'{action_name} (action_key \'{action_key}\')'
-        return status_msg
+            # Sort running actions alphabetically by action_key
+            sorted_actions = sorted(self.running_actions.keys(),
+                                    key=lambda action_server_name:
+                                    (self.action_keys[action_server_name]))
+
+            for action_server_name in sorted_actions:
+                # Extract action information
+                action_name = self.action_names[action_server_name]
+                action_key = self.action_keys[action_server_name]
+                running_descr = self.running_descriptions[action_server_name]
+                # Append running action string
+                msg.append(f'{action_key}: [{action_name}] {running_descr}')
+
+        msg = '\n'.join(msg)
+        return msg
+
+    def create_valid_actions_msg(self) -> str:
+        """Returns a formated list of valid do and cancel actions.
+
+        Message format:
+            action_key: Do|Cancel [action_name] action_descr|cancel_descr
+
+        Message format example 1:
+            a: Do [Idle action] A no-operation action that represents a decision to remain idle.
+            b: Do [Reply action] This action allows the robot to reply to user interactions by sending a response based on the current state information.
+
+        Message format example 2:
+            a: Do [Idle action] A no-operation action that represents a decision to remain idle.
+            b: Cancel [Reply action] Canceling will stop the current reply generation to the user, potentially freeing the robot to formulate a different reply or take another action.
+        """  # noqa E501
+        msg = []
+
+        # Sort valid actions alphabetically by action_key
+        sorted_names = sorted(self.action_registry.keys(),
+                              key=lambda action_server_name:
+                              (self.action_keys[action_server_name]))
+
+        with self.lock:
+            for action_server_name in sorted_names:
+                action_key = self.action_keys[action_server_name]
+                action_name = self.action_names[action_server_name]
+
+                # Format string as `Do` or `Cancel` action
+                is_running = action_server_name in self.running_actions.keys()
+                if is_running:
+                    action_type = 'Cancel'
+                    descr = self.cancel_descriptions[action_server_name]
+                else:
+                    action_type = 'Do'
+                    descr = self.action_descriptions[action_server_name]
+
+                msg.append(
+                    f'{action_key}: {action_type} [{action_name}] {descr}')
+
+        msg = '\n'.join(msg)
+        return msg

@@ -113,5 +113,35 @@ Service for predicting the optimal action to take based on the current state.
 The created action service is named `llm_action_server_ad_8b_action` + `_action`.
 
 
+### Valid actions message
+
+A listing of all available actions and ongoing action cancellations the action decision inference module can choose to execute
+
+```
+action_key: Do|Cancel [action_name] action_description|cancel_description
+```
+
+Example:
+```
+a: Do [Idle Action] A no-operation action that represents a decision to remain idle.
+b: Do [Reply Action] This action allows the robot to reply to user interactions by sending a response based on the current state information.
+```
+
+```
+a: Do [Idle Action] A no-operation action that represents a decision to remain idle.
+b: Cancel [Reply Action] Stops the current reply generation to the user, potentially freeing the robot to formulate a different reply or take another action.
+```
+
+### Running actions message
+
+```
+action_key: [action_name] running description
+```
+
+Example:
+```
+b: [Reply Action] The robot is currently replying to the user based on the state information when the reply action was initiated.
+```
+
 # TODO
 - Why prompt templates are separated from implementation (e.g. `ReplyAction` <--> `action_reply_pt()`)

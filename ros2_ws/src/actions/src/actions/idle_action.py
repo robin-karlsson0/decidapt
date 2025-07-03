@@ -106,3 +106,29 @@ class IdleAction(BaseAction):
                 expected behavior
         """
         return 'A no-operation action that represents a decision to remain idle.'  # noqa: E501
+
+    def get_running_description(self) -> str:
+        """Return a detailed description of what the action is currently doing.
+
+        This method provides information about expected outcome of an ongoing
+        action to aid the decision making agent to predict subsequent actions
+        taking into account the ongoing action.
+
+        Returns:
+            str: Detailed description of the action's current activity and
+                expected outcome.
+        """
+        return 'The robot decided to not take any new action and action decision making is idling.'  # noqa: E501
+
+    def get_cancel_description(self) -> str:
+        """Return a detailed description of consequences of canceling action.
+
+        This method provides information about what happens when the action is
+        cancelled, including any side effects, partial completion states, or
+        recovery behaviors that the decision making agent should be aware of.
+
+        Returns:
+            str: Detailed description of the cancellation consequences and
+                expected behavior when the action is terminated
+        """
+        return 'Stop the robot\'s action decision making from idling and allow taking another action.'  # noqa: E501
