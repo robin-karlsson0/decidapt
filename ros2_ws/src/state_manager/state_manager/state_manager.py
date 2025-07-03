@@ -10,6 +10,8 @@ from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from std_msgs.msg import String
 from transformers import AutoTokenizer
 
+RUNNING_ACTIONS_DEFAULT_STR = 'None'
+
 
 class StateManager(Node):
     """ROS2 node that listens to topics and maintains a queue of state chunks.
@@ -156,7 +158,7 @@ class StateManager(Node):
             self._action_running_sub_callback,
             10,
         )
-        self.running_actions = ''
+        self.running_actions = RUNNING_ACTIONS_DEFAULT_STR
 
         # Create QoS profile with transient local durability
         qos_profile = QoSProfile(
@@ -332,7 +334,13 @@ class StateManager(Node):
 
     def _action_running_sub_callback(self, msg):
         """Stores latest running actions msg and publish updated state."""
-        self.running_actions = msg.data
+        running_actions = msg.data
+        # Default string if message no running actions
+        if len(running_actions) > 0:
+            self.running_actions = msg.data
+        else:
+            self.running_actions = RUNNING_ACTIONS_DEFAULT_STR
+
         self._publish_state()
 
     def _publish_state(self):
