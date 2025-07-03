@@ -46,6 +46,9 @@ class StateManager(Node):
         The most recent state chunk.
     ---
 
+    NOTE: A new state must be published for EVERY incoming update, including
+        when receiving 'action_running_topic' messages!
+
     How to run:
         ros2 run decidapt state_manager --ros-args \
             -p event_topics:="['/asr', '/user_commands', '/navigation_goals']" \
@@ -328,8 +331,9 @@ class StateManager(Node):
         return popped_chunks
 
     def _action_running_sub_callback(self, msg):
-        """Stores latest running actions msg in the state."""
+        """Stores latest running actions msg and publish updated state."""
         self.running_actions = msg.data
+        self._publish_state()
 
     def _publish_state(self):
         """Publish the current state."""
