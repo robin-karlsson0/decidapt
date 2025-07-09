@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "actions"
-version = "0.0.1"
+version = "0.0.2"
 description = "Action plugin implementations for Action Cycle Controller"
 readme = "README.md"
 authors = [{ name = "Robin Karlsson", email = "robin.karlsson0@gmail.com" }]

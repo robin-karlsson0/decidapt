@@ -65,10 +65,12 @@ class BaseAction(ABC):
     def _register_action_servers(self):
         """Register action servers based on configuration specifications.
 
-        Supports two configuration patterns:
+        Supports three configuration patterns:
         1. Single action server: 'action_server' and 'action_type' keys
         2. Multiple action servers: 'action_servers' list with 'name' and
             'type' for each
+        3. Virtual action server: Only 'action_key' specified (for actions
+            like IdleAction that don't need real action servers)
 
         This method enables plugins to automatically set up their required
         action servers without manual intervention, supporting the self-managing
@@ -86,8 +88,14 @@ class BaseAction(ABC):
             action_servers:
               - name: "move_server"
                 type: "geometry_msgs/action/MoveBase"
-              - name: "grasp_server" 
+              - name: "grasp_server"
                 type: "manipulation_msgs/action/Grasp"
+            ```
+
+            Virtual server (for actions that don't need real servers):
+            ```yaml
+            action_key: "a"
+            # No action_server or action_type needed
             ```
 
         Note:
@@ -98,15 +106,26 @@ class BaseAction(ABC):
             server_name = self.config['action_server']
             action_type_str = self.config['action_type']
             action_key = self.config['action_key']
+            action_name = self.get_action_name()
+            action_description = self.get_action_description()
+            running_description = self.get_running_description()
+            cancel_description = self.get_cancel_description()
             if action_type_str:
                 try:
                     # Resolve string to actual action type
                     action_type = self._resolve_action_type(action_type_str)
 
                     self.action_manager.register_action(
-                        server_name, action_type, action_key)
+                        server_name,
+                        action_type,
+                        action_key,
+                        action_name,
+                        action_description,
+                        running_description,
+                        cancel_description,
+                    )
                     self.node.get_logger().info(
-                        f"Registered action server: {server_name} for {self.get_action_name()}"  # noqa: E501
+                        f"Registered action server: {server_name} for {action_name}"  # noqa: E501
                     )
                 except Exception as e:
                     self.node.get_logger().error(
@@ -129,6 +148,36 @@ class BaseAction(ABC):
                 except Exception as e:
                     self.node.get_logger().error(
                         f"Failed to register action server {server_name}: {e}")
+
+        # Handle virtual action server (for actions that don't need real server)
+        elif 'action_key' in self.config and 'action_server' not in self.config:
+            # Create a virtual action server name based on the action name
+            action_name_clean = self.get_action_name().lower().replace(
+                ' ', '_')
+            virtual_server_name = f"virtual_{action_name_clean}_server"
+            action_key = self.config['action_key']
+            action_name = self.get_action_name()
+            action_description = self.get_action_description()
+            running_description = self.get_running_description()
+            cancel_description = self.get_cancel_description()
+
+            try:
+                # Register with None as action_type to indicate virtual server
+                self.action_manager.register_virtual_action(
+                    virtual_server_name,
+                    action_key,
+                    action_name,
+                    action_description,
+                    running_description,
+                    cancel_description,
+                )
+                self.node.get_logger().info(
+                    f"Registered virtual action server: {virtual_server_name} for {action_name}"  # noqa: E501
+                )
+            except Exception as e:
+                self.node.get_logger().error(
+                    f"Failed to register virtual action server "
+                    f"{virtual_server_name}: {e}")
 
         try:
             self.action_key = self.config['action_key']
@@ -259,7 +308,7 @@ class BaseAction(ABC):
         Example:
             ```python
             def get_action_name(self) -> str:
-                return "Robot Reply Action"
+                return "Reply Action"
             ```
         """
         pass
@@ -279,7 +328,47 @@ class BaseAction(ABC):
         Example:
             ```python
             def get_action_description(self) -> str:
-                return "Reply action enables the robot to respond to user interactions."  # noqa: E501
+                return "Reply action enables the robot to respond to user interactions."
             ```
-        """
+        """  # noqa: E501
+        pass
+
+    @abstractmethod
+    def get_running_description(self) -> str:
+        """Return a detailed description of what the action is currently doing.
+
+        This method provides information about expected outcome of an ongoing
+        action to aid the decision making agent to predict subsequent actions
+        taking into account the ongoing action.
+
+        Returns:
+            str: Detailed description of the action's current activity and
+                expected outcome.
+
+        Example:
+            ```python
+            def get_running_description(self) -> str:
+                return "The robot is currently replying to the user based on the state information when the reply action was initiated."
+            ```
+        """  # noqa: E501
+        pass
+
+    @abstractmethod
+    def get_cancel_description(self) -> str:
+        """Return a detailed description of consequences of canceling action.
+
+        This method provides information about what happens when the action is
+        cancelled, including any side effects, partial completion states, or
+        recovery behaviors that the decision making agent should be aware of.
+
+        Returns:
+            str: Detailed description of the cancellation consequences and
+                expected behavior when the action is terminated
+
+        Example:
+            ```python
+            def get_cancel_description(self) -> str:
+                return "Stops the current reply generation to the user, potentially freeing the robot to formulate a different reply or take another action."
+            ```
+        """  # noqa: E501
         pass

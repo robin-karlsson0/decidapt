@@ -77,7 +77,7 @@ class ReplyAction(BaseAction):
         """
         return 'Reply action'
 
-    def get_action_description(self):
+    def get_action_description(self) -> str:
         """Return a detailed description of the action's purpose and behavior.
 
         This method provides additional context about what the action does,
@@ -89,3 +89,29 @@ class ReplyAction(BaseAction):
                 expected behavior
         """
         return 'This action allows the robot to reply to user interactions by sending a response based on the current state information.'  # noqa: E501
+
+    def get_running_description(self) -> str:
+        """Return a detailed description of what the action is currently doing.
+
+        This method provides information about expected outcome of an ongoing
+        action to aid the decision making agent to predict subsequent actions
+        taking into account the ongoing action.
+
+        Returns:
+            str: Detailed description of the action's current activity and
+                expected outcome.
+        """
+        return 'The robot is currently replying to the user based on the state information when the reply action was initiated.'  # noqa: E501
+
+    def get_cancel_description(self) -> str:
+        """Return a detailed description of consequences of canceling action.
+
+        This method provides information about what happens when the action is
+        cancelled, including any side effects, partial completion states, or
+        recovery behaviors that the decision making agent should be aware of.
+
+        Returns:
+            str: Detailed description of the cancellation consequences and
+                expected behavior when the action is terminated
+        """
+        return 'Stops the current reply generation to the user, potentially freeing the robot to formulate a different reply or take another action.'  # noqa: E501

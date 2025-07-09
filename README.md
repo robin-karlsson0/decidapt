@@ -113,5 +113,98 @@ Service for predicting the optimal action to take based on the current state.
 The created action service is named `llm_action_server_ad_8b_action` + `_action`.
 
 
+### Valid actions message
+
+A listing of all available actions and ongoing action cancellations the action decision inference module can choose to execute
+
+```
+action_key: Do|Cancel [action_name] action_description|cancel_description
+```
+
+Example:
+```
+a: Do [Idle Action] A no-operation action that represents a decision to remain idle.
+b: Do [Reply Action] This action allows the robot to reply to user interactions by sending a response based on the current state information.
+```
+
+```
+a: Do [Idle Action] A no-operation action that represents a decision to remain idle.
+b: Cancel [Reply Action] Stops the current reply generation to the user, potentially freeing the robot to formulate a different reply or take another action.
+```
+
+### Running actions message
+
+```
+action_key: [action_name] running description
+```
+
+Example:
+```
+b: [Reply Action] The robot is currently replying to the user based on the state information when the reply action was initiated.
+```
+
+# How to Add Actions
+
+1. Create a ROS 2 *action server node* that implements the action
+
+2. Create an *action definition* by adding a module to the `actions.yaml` config (`ros2_ws/src/action_cycle_controller/config/actions.yaml`):
+
+```yaml
+  - module: "actions.ACTION_DEFINITION_FILENAME" 
+    class: "ACTION_CLASS_NAME"
+    action_server: "ACTION_SERVER_NAME"
+    action_type: "ACTION_INTERFACE_IMPORT_PTH"
+    action_key: 'FREE_SINGLE_TOKEN_CHARACTER_STRING'
+```
+
+Example:
+```yaml
+  - module: "actions.reply_action" 
+    class: "ReplyAction"
+    action_server: "reply_action_server"
+    action_type: "exodapt_robot_interfaces.action.ReplyAction"
+    action_key: 'b'
+```
+
+3. Implement *action module* `YOUR_ACTION.py` for the action server node (`ros2_ws/src/actions/src/actions/YOUR_ACTION.py`). The action module is a subclass of `BaseAction` and implements the following abstract methods:
+- execute(): Execute the action by sending a goal to the action server node
+- get_action_name(): Get the human-readable name of this action module
+- get_action_description(): Returns a detailed description of the action's purpose and behavior
+- get_running_description(): Returns a detailed description of what the action is currently doing
+- get_cancel_description(): Returns a detailed description of consequences of canceling action
+
+Example:
+```python
+from actions.base_action import BaseAction
+from exodapt_robot_interfaces.action import ReplyAction as ReplyActionInterface
+
+
+class ReplyAction(BaseAction):
+
+    def __init__(self, node, action_manager, config):
+        super().__init__(node, action_manager, config)
+
+    def execute(self, state: str):
+        goal = ReplyActionInterface.Goal()
+        goal.state = state
+        # Use action server name from config
+        server_name = self.config.get('action_server', 'reply_action_server')
+        self.action_manager.submit_action(server_name, goal)
+
+    def get_action_name(self) -> str:
+        return 'Reply action'
+
+    def get_action_description(self) -> str:
+        return 'This action allows the robot to reply to user interactions... '
+
+    def get_running_description(self) -> str:
+        return 'The robot is currently replying to the user based on the ... '
+
+    def get_cancel_description(self) -> str:
+        return 'Stops the current reply generation to the user, potentially ...'
+```
+
+4. Make sure the action server node is running when launching ActionCycleController
+
 # TODO
 - Why prompt templates are separated from implementation (e.g. `ReplyAction` <--> `action_reply_pt()`)
