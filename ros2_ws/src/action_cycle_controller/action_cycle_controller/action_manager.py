@@ -525,14 +525,12 @@ class ActionManager:
             callback.
         """
         # Get action state info while locked
-        self.node.get_logger().info('Entered cancel_action')
         with self.lock:
             if action_name not in self.running_actions:
                 self.node.get_logger().warning(
                     f'Trying to cancel not running action: {action_name}')
                 return ActionResult.INVALID
             state = self.running_actions[action_name]
-        self.node.get_logger().info('After lock')
 
         # Cancel outside the lock
         if hasattr(state, 'goal_handle') and state.goal_handle:
@@ -543,7 +541,6 @@ class ActionManager:
         # elif state.future:
         #     state.future.cancel()
 
-        self.node.get_logger().info('Adding callback function')
         callback = partial(self.cancel_done, action_name=action_name)
         future.add_done_callback(callback)
 
