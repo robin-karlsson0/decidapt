@@ -2,6 +2,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import partial
 from typing import Any, Callable
 
 from action_msgs.msg import GoalStatus
@@ -209,6 +210,7 @@ class ActionManager:
         Returns:
             ActionResult: Resulting state of action execution.
         """
+        cancel_action = False
         with self.lock:
             # Catches 1) invalid action names and 2) capacity exceeded
             if not self._validate_action(action_name):
@@ -216,7 +218,19 @@ class ActionManager:
 
             # TODO: Handle N concurrent actions
             if self.is_running(action_name):
-                self.cancel_action(action_name)
+                cancel_action = True
+
+        if cancel_action:
+            self.node.get_logger().info(f'Cancelling action: {action_name}')
+            return self.cancel_action(action_name)
+
+        with self.lock:
+            # Re-check in case state changed between lock releases
+            if self.is_running(action_name):
+                self.node.get_logger().warning(
+                    f'Action "{action_name}" started by another thread. Aborting submission.'  # noqa E501
+                )
+                return ActionResult.INVALID  # Or some other appropriate status
 
             # Stores particular action state
             config = self.action_registry[action_name]
@@ -232,6 +246,7 @@ class ActionManager:
             self.running_actions[action_name] = state
 
         # Execute action
+        self.node.get_logger().info(f'Executing action: {action_name}')
         return self._execute_action(state)
 
     def _execute_action(self, state: ActionState) -> ActionResult:
@@ -306,30 +321,54 @@ class ActionManager:
         except Exception as e:
             self._complete_action(action_name, ActionResult.FAILED, str(e))
 
-    def cancel_action(self, action_name) -> bool:
+    def cancel_action(self, action_name: str) -> ActionResult:
         """Cancel running action.
 
         Args:
-            action_name (str): Name of the action to cancel.
+            action_name: Name of the action to cancel.
 
         Returns:
-            bool: True if action was canceled, False if not running.
+
         """
-        # Get state info while locked
+        # Get action state info while locked
+        self.node.get_logger().info('Entered cancel_action')
         with self.lock:
             if action_name not in self.running_actions:
-                return False
+                self.node.get_logger().warning(
+                    f'Trying to cancel not running action: {action_name}')
+                return ActionResult.INVALID
             state = self.running_actions[action_name]
+        self.node.get_logger().info('After lock')
 
         # Cancel outside the lock
         if hasattr(state, 'goal_handle') and state.goal_handle:
-            state.goal_handle.cancel_goal_async()
-        elif state.future:
-            state.future.cancel()
+            self.node.get_logger().info('Sending cancel request')
+            future = state.goal_handle.cancel_goal_async()
+        else:
+            raise Exception('Action state is missing a "goal_handle" object')
+        # elif state.future:
+        #     state.future.cancel()
+
+        self.node.get_logger().info('Adding callback function')
+        callback = partial(self.cancel_done, action_name=action_name)
+        future.add_done_callback(callback)
 
         # Complete the action (this will acquire its own lock)
+        # self._complete_action(action_name, ActionResult.CANCELED)
+        return ActionResult.CANCELED
+
+    def cancel_done(self, future, action_name: str):
+        """
+        """
+        cancel_response = future.result()
+        if len(cancel_response.goals_canceling) == 0:
+            self.node.get_logger().warning(
+                f'Failed to cancel action: {action_name}')
+            return
+
+        self.node.get_logger().info(
+            f'Successfully cancelled action: {action_name}')
         self._complete_action(action_name, ActionResult.CANCELED)
-        return True
 
     def _complete_action(self, action_name, result, data=None):
         """Clean up and notify completion."""
@@ -354,6 +393,8 @@ class ActionManager:
     def _validate_action(self, action_name):
         """Validate action can be executed."""
         if action_name not in self.action_registry:
+            self.node.get_logger().warning(
+                f'Given action name "{action_name}" not in registry!')
             return False
 
         config = self.action_registry[action_name]
@@ -363,10 +404,11 @@ class ActionManager:
             # Virtual actions can always be executed (no concurrency limits)
             return True
 
-        running_count = sum(1 for s in self.running_actions.values()
-                            if s.name == action_name)
-
-        return running_count < config.max_concurrent
+        # TODO: Separate concurrent check and action cancellation?
+        # running_count = sum(1 for s in self.running_actions.values()
+        #                     if s.name == action_name)
+        # return running_count < config.max_concurrent
+        return True
 
     def is_running(self, action_name):
         """Check if existing action should be canceled."""
