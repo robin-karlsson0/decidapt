@@ -10,6 +10,12 @@ actions:
     action_type: "exodapt_robot_interfaces.action.ReplyAction"
     action_key: 'b'
 
+  - module: "actions.long_dummy_action"
+    class: "LongDummyAction"
+    action_server: "long_dummy_action_server"
+    action_type: "exodapt_robot_interfaces.action.LongDummyAction"
+    action_key: 'z'
+
   # Example: Complex action with multiple servers
   # - module: "actions.navigation_action"
   #   class: "NavigationAction" 
