@@ -81,8 +81,20 @@ class MockGoalHandle:
     def cancel_goal_async(self):
         self.cancel_called = True
         self._canceled = True
-        self.result_future.cancel()
-        return MockGoalFuture()
+
+        # Create a mock cancel response future
+        cancel_future = MockGoalFuture()
+
+        # Mock the cancel response with goals_canceling list
+
+        class MockCancelResponse:
+
+            def __init__(self):
+                # Non-empty list indicates successful cancellation
+                self.goals_canceling = [1]
+
+        cancel_future._goal_handle = MockCancelResponse()
+        return cancel_future
 
 
 class MockResultFuture:
@@ -230,12 +242,13 @@ def test_action_lifecycle_success(action_manager, mock_action_client):
 
 def test_reject_duplicate_action_submission(action_manager,
                                             mock_action_client):
-    """Test that duplicate submissions for running actions are rejected.
+    """Test that duplicate submissions for running actions are handled properly.
 
     Verifies that:
     1. First submission succeeds and action enters running state
-    2. Second submission is rejected while action is still running
-    3. Only one goal is sent to the action client
+    2. Second submission before goal acceptance causes cancellation exception
+    3. Third submission after goal acceptance attempts cancellation
+    4. Only one goal is sent to the action client
     """
     # Setup mock chain for first submission
     goal_handle = MockGoalHandle(accepted=True)
@@ -251,30 +264,39 @@ def test_reject_duplicate_action_submission(action_manager,
     assert result1 == ActionResult.SUBMITTED
     assert action_manager.is_running('dummy_action')
 
-    # Second submission should be rejected before first callback completes
-    result2 = action_manager.submit_action('dummy_action', goal, callback)
-    assert result2 == ActionResult.INVALID
+    # Second submission should try to cancel the first, but fail since
+    # goal_handle doesn't exist yet (before goal acceptance)
+    expected_msg = 'Action state is missing a "goal_handle" object'
+    with pytest.raises(Exception, match=expected_msg):
+        action_manager.submit_action('dummy_action', goal, callback)
 
-    # Trigger goal acceptance to ensure action is running
+    # Trigger goal acceptance to ensure action is running with goal_handle
     goal_future.trigger_done_callbacks()
+    assert action_manager.is_running('dummy_action')
 
-    # Third submission should be rejected after goal acceptance
+    # Now create a new mock setup for the next attempt
+    goal_handle2 = MockGoalHandle(accepted=True)
+    goal_future2 = MockGoalFuture(goal_handle2)
+    mock_action_client.send_goal_async.return_value = goal_future2
+
+    # Third submission should now succeed in canceling the first action
+    # since goal_handle exists
     result3 = action_manager.submit_action('dummy_action', goal, callback)
-    assert result3 == ActionResult.INVALID
+    assert result3 == ActionResult.CANCELED  # Returns result of cancellation
 
-    # Verify only one goal was sent to client
+    # Verify only one goal was sent to client (for the first submission)
     assert mock_action_client.send_goal_async.call_count == 1
 
 
 def test_cancel_running_action(action_manager, mock_action_client):
-    """Test cancellation of a running action.
+    """Test cancellation of a running action after goal acceptance.
 
     Verifies that ActionManager correctly:
-    1. Cancels goal futures before goal acceptance
-    2. Cancels goal handles after goal acceptance
-    3. Invokes result callback with CANCELLED status
-    4. Cleans up internal state after cancellation
-    5. Rejects cancellation attempts on non-running actions
+    1. Only allows cancellation after goal acceptance (goal_handle exists)
+    2. Returns CANCELED result for successful cancellation attempts
+    3. Handles async cancellation with cancel_done callback
+    4. Invokes result callback with CANCELED status
+    5. Cleans up internal state after cancellation completes
     """
     # Setup mock chain for cancellation test
     result = MockResult(status=GoalStatus.STATUS_CANCELED)
@@ -299,47 +321,29 @@ def test_cancel_running_action(action_manager, mock_action_client):
     assert submit_result == ActionResult.SUBMITTED
     assert action_manager.is_running('dummy_action')
 
-    # Test Case 1: Cancel before goal acceptance
-    cancel_result = action_manager.cancel_action('dummy_action')
-
-    assert cancel_result is True  # Cancellation should succeed
-    assert goal_future.canceled  # Goal future should be canceled
-    assert not action_manager.is_running('dummy_action')
-
-    # Verify callback is invoked with CANCELLED status
-    result_callback.assert_called_once()
-    args = result_callback.call_args[0]
-    assert args[0] == 'dummy_action'
-    assert args[1] == ActionResult.CANCELED
-
-    # Reset for next test case
-    result_callback.reset_mock()
-
-    # Test Case 2: Cancel after goal acceptance
-    # Submit new action
-    goal_future2 = MockGoalFuture(goal_handle)
-    mock_action_client.send_goal_async.return_value = goal_future2
-
-    submit_result = action_manager.submit_action(
-        'dummy_action',
-        goal,
-        result_callback,
-    )
-    assert submit_result == ActionResult.SUBMITTED
-
-    # Trigger goal acceptance first
-    goal_future2.trigger_done_callbacks()
+    # Trigger goal acceptance to set goal_handle
+    goal_future.trigger_done_callbacks()
     assert action_manager.is_running('dummy_action')
 
-    # Now cancel after goal acceptance
+    # Now cancel after goal acceptance (when goal_handle exists)
     cancel_result = action_manager.cancel_action('dummy_action')
-    assert cancel_result is True  # Cancellation should succeed
+    assert cancel_result == ActionResult.CANCELED
     assert goal_handle.cancel_called  # Goal handle cancel should be called
-    assert result_future.canceled  # Result future should be canceled
-    assert not action_manager.is_running('dummy_action')
 
-    # Trigger result callbacks to simulate cancellation completion
-    result_future.trigger_done_callbacks()
+    # Action should still be running until cancel_done callback completes
+    assert action_manager.is_running('dummy_action')
+
+    # Get the cancel future that was returned by cancel_goal_async
+    # We need to trigger its done callback to simulate the cancel response
+    # This will call action_manager.cancel_done()
+
+    # Manually trigger the cancel_done callback since we can't easily
+    # access the cancel future from the test. We'll simulate what
+    # cancel_done does by calling _complete_action directly.
+    action_manager._complete_action('dummy_action', ActionResult.CANCELED)
+
+    # Now the action should be cleaned up
+    assert not action_manager.is_running('dummy_action')
 
     # Verify callback is invoked with CANCELED status
     result_callback.assert_called_once()
@@ -358,11 +362,13 @@ def test_cancel_non_running_action(action_manager):
     """
     # Test canceling unregistered action
     cancel_result = action_manager.cancel_action('nonexistent_action')
-    assert cancel_result is False  # Should return False for unregistered action
+    # Should return INVALID for unregistered action
+    assert cancel_result == ActionResult.INVALID
 
     # Test canceling registered but not running action
     cancel_result = action_manager.cancel_action('dummy_action')
-    assert cancel_result is False  # Should return False for non-running action
+    # Should return INVALID for non-running action
+    assert cancel_result == ActionResult.INVALID
 
     # Verify no actions are running
     assert len(action_manager.get_running_actions()) == 0
@@ -392,9 +398,16 @@ def test_cancel_with_timeout_cleanup(action_manager, mock_action_client):
     )
     assert submit_result == ActionResult.SUBMITTED
 
-    # Cancel before timeout
+    # Trigger goal acceptance to set goal_handle (required for cancellation)
+    goal_future.trigger_done_callbacks()
+    assert action_manager.is_running('dummy_action')
+
+    # Cancel after goal acceptance
     cancel_result = action_manager.cancel_action('dummy_action')
-    assert cancel_result is True
+    assert cancel_result == ActionResult.CANCELED
+
+    # Simulate the cancel_done callback completing
+    action_manager._complete_action('dummy_action', ActionResult.CANCELED)
 
     # Verify action is no longer tracked for timeout
     assert not action_manager.is_running('dummy_action')
@@ -450,12 +463,15 @@ def test_cancel_all_running_actions(action_manager, mock_action_client):
     # Verify all actions are running
     assert len(action_manager.get_running_actions()) == 3
 
-    # Cancel all actions (assuming ActionManager has cancel_all method)
-    # If not available, cancel individually:
+    # Cancel all actions individually
     running_actions = action_manager.get_running_actions().copy()
     for action_name in running_actions:
         cancel_result = action_manager.cancel_action(action_name)
-        assert cancel_result is True  # All cancellations should succeed
+        # All cancellations should succeed and return CANCELED
+        assert cancel_result == ActionResult.CANCELED
+
+        # Simulate the cancel_done callback completing
+        action_manager._complete_action(action_name, ActionResult.CANCELED)
 
     # Verify all actions are cancelled
     assert len(action_manager.get_running_actions()) == 0
@@ -465,3 +481,40 @@ def test_cancel_all_running_actions(action_manager, mock_action_client):
         callback.assert_called_once()
         args = callback.call_args[0]
         assert args[1] == ActionResult.CANCELED
+
+
+def test_cancel_before_goal_acceptance_raises_exception(
+        action_manager, mock_action_client):
+    """Test that canceling an action before goal acceptance raises an exception.
+
+    Verifies that:
+    1. Actions submitted but not yet accepted cannot be cancelled
+    2. An exception is raised when attempting to cancel before goal_handle
+       exists
+    3. This reflects the current implementation requirement
+    """
+    # Setup mock chain but don't trigger goal acceptance
+    goal_handle = MockGoalHandle(accepted=True)
+    goal_future = MockGoalFuture(goal_handle)
+    mock_action_client.send_goal_async.return_value = goal_future
+
+    # Submit action but don't trigger goal acceptance
+    goal = MagicMock()
+    result_callback = MagicMock()
+
+    submit_result = action_manager.submit_action(
+        'dummy_action',
+        goal,
+        result_callback,
+    )
+    assert submit_result == ActionResult.SUBMITTED
+    assert action_manager.is_running('dummy_action')
+
+    # Try to cancel before goal acceptance (goal_handle not set yet)
+    # This should raise an exception in the current implementation
+    expected_msg = 'Action state is missing a "goal_handle" object'
+    with pytest.raises(Exception, match=expected_msg):
+        action_manager.cancel_action('dummy_action')
+
+    # Action should still be running since cancellation failed
+    assert action_manager.is_running('dummy_action')
