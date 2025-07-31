@@ -51,7 +51,7 @@ from rclpy.parameter import Parameter
 # Model Configuration
 DEFAULT_MODEL = "Qwen/Qwen2-1.5B-Instruct"
 TEST_MAX_TOKENS = 1  # Single token output for action decisions
-TEST_TEMPERATURE = 0.0
+TEST_TEMPERATURE = 0.01
 TEST_SEED = 14
 
 # Server Configuration
@@ -507,17 +507,29 @@ class TestActionDecisionActionServerTGI(BaseActionDecisionActionServerTest):
             - Proper request/response format handling
             - Action decision generation with controlled parameters
         """
-        # Example inference request
+        # Example inference request - updated for TGI v3.3.2 API format
         payload = {
             "inputs": "Hello, how are you?",
             "parameters": {
                 "max_new_tokens": 10,
                 "temperature": TEST_TEMPERATURE,
-                "seed": TEST_SEED
+                "seed": TEST_SEED,
+                "do_sample": True if TEST_TEMPERATURE > 0 else False
             }
         }
 
         response = requests.post(f"{self.tgi_url}/generate", json=payload)
+
+        # Debug information if request fails
+        if response.status_code != 200:
+            print(f"TGI request failed with status {response.status_code}")
+            print(f"Response text: {response.text}")
+            try:
+                error_details = response.json()
+                print(f"Error details: {error_details}")
+            except Exception:
+                pass
+
         assert response.status_code == 200
 
         result = response.json()
