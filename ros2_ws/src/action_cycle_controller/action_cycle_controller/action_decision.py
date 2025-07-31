@@ -7,7 +7,6 @@ from datetime import datetime
 import rclpy
 from exodapt_robot_interfaces.action import ActionDecision
 from exodapt_robot_pt import action_decision_pt
-from huggingface_hub import InferenceClient
 from rclpy.action import ActionServer
 from rclpy.node import Node
 
@@ -46,8 +45,10 @@ class ActionDecisionActionServer(Node):
         log_pred_io_pth (str): Directory path for logging LLM prediction
                               input/output pairs. If empty, no logging is
                               performed (default: '')
-        tgi_server_url (str): Base URL of the TGI server
-                             (default: 'http://localhost:8000')
+        inference_server_type (str): Type of inference server: 'tgi' or 'vllm'
+                                   (default: 'tgi')
+        inference_server_url (str): Base URL of the inference server
+                                  (default: 'http://localhost:8000')
         max_tokens (int): Maximum tokens for LLM generation
                          (default: 1, NOTE: Single token output)
         llm_temp (float): Temperature parameter for LLM sampling
@@ -70,9 +71,10 @@ class ActionDecisionActionServer(Node):
         suitable for robotic control systems.
 
     Note:
-        Requires a running TGI server at the configured URL. The single-token
-        output constraint ensures fast inference but requires careful prompt
-        engineering to map complex decisions to single characters.
+        Requires a running inference server at the configured URL. Supports
+        both TGI and vLLM servers. The single-token output constraint ensures
+        fast inference but requires careful prompt engineering to map complex
+        decisions to single characters.
     """
 
     def __init__(self, **kwargs):
@@ -81,7 +83,7 @@ class ActionDecisionActionServer(Node):
         Sets up the complete LLM-based action decision infrastructure including:
         - ROS 2 node parameters for server configuration and LLM settings
         - ActionServer for handling ActionDecision requests
-        - HuggingFace InferenceClient for TGI server communication
+        - Inference client setup for TGI or vLLM server communication
         - Optional logging directory creation for prediction I/O tracking
 
         Args:
@@ -104,7 +106,8 @@ class ActionDecisionActionServer(Node):
         self.declare_parameter('log_pred_io_pth', '')
 
         # LLM inference params
-        self.declare_parameter('tgi_server_url', 'http://localhost:8000')
+        self.declare_parameter('inference_server_type', 'tgi')
+        self.declare_parameter('inference_server_url', 'http://localhost:8000')
         self.declare_parameter('max_tokens', 1)  # NOTE: Single token output
         self.declare_parameter('llm_temp', 0.0)
         self.declare_parameter('llm_seed', 14)
@@ -112,20 +115,32 @@ class ActionDecisionActionServer(Node):
         self.action_server_name = self.get_parameter(
             'action_server_name').value
         self.log_pred_io_pth = self.get_parameter('log_pred_io_pth').value
-        self.tgi_server_url = self.get_parameter('tgi_server_url').value
+        self.inference_server_type = self.get_parameter(
+            'inference_server_type').value
+        self.inference_server_url = self.get_parameter(
+            'inference_server_url').value
         self.max_tokens = self.get_parameter('max_tokens').value
         self.llm_temp = self.get_parameter('llm_temp').value
         self.llm_seed = self.get_parameter('llm_seed').value
+
+        # Configure inference server type and corresponding client/callback
+        if self.inference_server_type.lower() == 'tgi':
+            self._setup_tgi_client()
+            self.execute_callback = self.execute_callback_tgi
+        elif self.inference_server_type.lower() == 'vllm':
+            self._setup_vllm_client()
+            self.execute_callback = self.execute_callback_vllm
+        else:
+            raise ValueError(f"Unsupported inference_server_type: "
+                             f"{self.inference_server_type}. "
+                             f"Supported types: 'tgi', 'vllm'")
 
         self._action_server = ActionServer(
             self,
             ActionDecision,
             self.action_server_name,
-            execute_callback=self.execute_callback_tgi,
+            execute_callback=self.execute_callback,
         )
-
-        base_url = f"{self.tgi_server_url}/v1/"
-        self.client = InferenceClient(base_url=base_url)
 
         # All valid actions represented by a single token output
         self.do_nothing_action = 'a'
@@ -140,10 +155,34 @@ class ActionDecisionActionServer(Node):
             'Parameters:\n'
             f'  action_server_name: {self.action_server_name}\n'
             f'  log_pred_io_pth: {self.log_pred_io_pth}\n'
-            f'  TGI server url: {self.tgi_server_url}\n'
+            f'  inference_server_type: {self.inference_server_type}\n'
+            f'  Inference server url: {self.inference_server_url}\n'
             f'  max_tokens: {self.max_tokens}\n'
             f'  llm_temp: {self.llm_temp}\n'
             f'  llm_seed: {self.llm_seed}')
+
+    def _setup_tgi_client(self):
+        """Setup Huggingface InferenceClient for TGI server."""
+        from huggingface_hub import InferenceClient
+        base_url = f"{self.inference_server_url}/v1/"
+        self.client = InferenceClient(base_url=base_url)
+        self.get_logger().info(f"Configured TGI client for: {base_url}")
+
+    def _setup_vllm_client(self):
+        """Setup OpenAI-compatible client for vLLM server."""
+        try:
+            from openai import OpenAI
+        except ImportError:
+            raise ImportError("OpenAI client is required for vLLM support. "
+                              "Install with: pip install openai")
+
+        self.client = OpenAI(
+            base_url=f"{self.inference_server_url}/v1",
+            api_key="dummy-key"  # vLLM doesn't require a real API key
+        )
+        self._vllm_model = self.client.models.list().data[0].id
+        self.get_logger().info(
+            f"Configured vLLM client for: {self.inference_server_url}/v1")
 
     async def execute_callback_tgi(self, goal_handle):
         """Execute action decision prediction using TGI server.
@@ -188,6 +227,77 @@ class ActionDecisionActionServer(Node):
 
         output = self.client.chat.completions.create(
             model="tgi",
+            messages=[
+                {
+                    "role": "user",
+                    "content": llm_input
+                },
+            ],
+            stream=False,
+            max_tokens=self.max_tokens,
+            temperature=self.llm_temp,
+            seed=self.llm_seed)
+        pred_action = output.choices[0].message.content
+
+        result = ActionDecision.Result()
+        result.pred_action = pred_action
+
+        t1 = time.time()
+        dt = t1 - t0
+
+        goal_handle.succeed()
+        self.get_logger().info(f"Return '{result.pred_action}' ({dt:.2f} s)")
+
+        # Write prediction IO example to file
+        if self.log_pred_io_pth:
+            await self.log_pred_io(llm_input, pred_action, dt)
+
+        return result
+
+    async def execute_callback_vllm(self, goal_handle):
+        """Execute action decision prediction using vLLM server.
+
+        This callback function processes ActionDecision goals by formatting
+        the robot state and valid actions into LLM prompts, querying the vLLM
+        server for predictions, and returning single-token action decisions.
+
+        Args:
+            goal_handle: ROS 2 action goal handle containing the ActionDecision
+                        request with state and valid_actions fields
+
+        Returns:
+            ActionDecision.Result: Result message containing the predicted
+                                  action as a single character string
+
+        Process Flow:
+            1. Extract state and valid actions from goal request
+            2. Format input using action_decision_pt prompt template
+            3. Send chat completion request to vLLM server
+            4. Extract single-token prediction from response
+            5. Log execution time and optionally save prediction I/O
+            6. Return result with predicted action
+
+        Performance:
+            - Times the complete inference process for monitoring
+            - Logs prediction results and execution duration
+            - Single-token constraint ensures sub-second response times
+
+        Error Handling:
+            vLLM server communication errors are propagated to the goal handle,
+            allowing clients to handle inference failures appropriately.
+        """
+        # Unpack ActionDecision.Goal() msg
+        goal = goal_handle.request
+        state = goal.state
+        valid_actions = goal.valid_actions
+
+        llm_input = action_decision_pt(state, valid_actions)
+
+        t0 = time.time()
+
+        # vLLM uses OpenAI-compatible API
+        output = self.client.chat.completions.create(
+            model=self._vllm_model,
             messages=[
                 {
                     "role": "user",
