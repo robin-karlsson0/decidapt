@@ -1,3 +1,4 @@
+import re
 import time
 from collections import deque
 from datetime import datetime
@@ -371,6 +372,53 @@ class StateManager(Node):
         state = self.get_state()
         return self.token_len(state)
 
+    @staticmethod
+    def _format_time_ago(diff):
+        """Format time difference as human-readable string.
+
+        Format: (1d 2h 3m 4s ago)
+        """
+        parts = []
+        if diff.days > 0:
+            parts.append(f"{diff.days}d")
+
+        hours = diff.seconds // 3600
+        if hours > 0:
+            parts.append(f"{hours}h")
+
+        minutes = (diff.seconds % 3600) // 60
+        if minutes > 0:
+            parts.append(f"{minutes}m")
+
+        seconds = diff.seconds % 60
+        if seconds > 0:
+            parts.append(f"{seconds}s")
+
+        return " ".join(parts) + " ago" if parts else "0s ago"
+
+    def add_to_chunk_dt(self, chunk: str) -> str:
+        """Returns a state chunk with added (T time ago) after timestamp entry.
+
+        Converts the substring
+            ts: 2025-08-21 15:38:49 --> ts: 2025-08-21 15:38:49 (25m 15s ago)
+        """
+        current_time = datetime.now()
+
+        def replace_ts(match):
+            ts_line = match.group(0)
+            ts_str = match.group(1)  # Just the timestamp part
+
+            # Parse timestamp and calculate difference
+            ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+            diff = current_time - ts
+            time_ago = self._format_time_ago(diff)
+
+            return f"{ts_line} ({time_ago})"
+
+        # Capture just the timestamp portion after "ts: "
+        pattern = r'^ts: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})$'
+        return re.sub(pattern, replace_ts, chunk, flags=re.MULTILINE)
+
     def get_state(self) -> str:
         """Return the state as a string with chunks ordered by timestamp."""
         ##################
@@ -381,15 +429,18 @@ class StateManager(Node):
 
         # Add event queue chunks
         for chunk_str, timestamp, _ in self.event_queue:
-            all_chunks.append((chunk_str, timestamp))
+            chunk_str_dt = self.add_to_chunk_dt(chunk_str)
+            all_chunks.append((chunk_str_dt, timestamp))
 
         # Add continuous queue chunks
         for chunk_str, timestamp, _ in self.continuous_queue:
-            all_chunks.append((chunk_str, timestamp))
+            chunk_str_dt = self.add_to_chunk_dt(chunk_str)
+            all_chunks.append((chunk_str_dt, timestamp))
 
         # Add thought queue chunks
         for chunk_str, timestamp, _ in self.thought_queue:
-            all_chunks.append((chunk_str, timestamp))
+            chunk_str_dt = self.add_to_chunk_dt(chunk_str)
+            all_chunks.append((chunk_str_dt, timestamp))
 
         # Sort by timestamp (oldest first)
         all_chunks.sort(key=lambda x: x[1])

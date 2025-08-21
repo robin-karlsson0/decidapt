@@ -467,3 +467,121 @@ class TestStateManager:
             self.state_manager.event_queue)
         assert final_tokens <= self.state_manager.event_queue_max_tokens, \
             'Event queue token limit should still be respected after very very large message'  # noqa: E501
+
+        # Cleanup
+        self.executor.remove_node(asr_node)
+        self.executor.remove_node(mllm_node)
+        self.executor.remove_node(thought_node)
+        asr_node.destroy_node()
+        mllm_node.destroy_node()
+        thought_node.destroy_node()
+
+    def test_add_to_chunk_dt_functionality(self):
+        """Test the add_to_chunk_dt method that adds 'time ago' to ts."""
+        from datetime import datetime, timedelta
+
+        # Initialize StateManager with custom parameters
+        test_params = self.create_test_parameters()
+        self.state_manager = StateManager(parameter_overrides=test_params)
+        self.executor.add_node(self.state_manager)
+
+        # Test chunk without timestamp (should remain unchanged)
+        chunk_no_ts = """topic: /test
+data: Test message without timestamp
+---"""
+        result = self.state_manager.add_to_chunk_dt(chunk_no_ts)
+        assert result == chunk_no_ts, "Chunk without timestamp should remain unchanged"  # noqa: E501
+
+        # Test chunk with recent timestamp
+        current_time = datetime.now()
+        recent_time = current_time - timedelta(minutes=5, seconds=30)
+        recent_ts_str = recent_time.strftime("%Y-%m-%d %H:%M:%S")
+
+        chunk_recent = f"""topic: /test_recent
+ts: {recent_ts_str}
+data: Recent test message
+---"""
+
+        result_recent = self.state_manager.add_to_chunk_dt(chunk_recent)
+        assert f"ts: {recent_ts_str} (" in result_recent, "Should add time ago to recent timestamp"  # noqa: E501
+        assert "5m" in result_recent and "30s" in result_recent, "Should show correct time difference"  # noqa: E501
+        assert "ago)" in result_recent, "Should end with 'ago)'"
+
+        # Test chunk with old timestamp (days ago)
+        old_time = current_time - timedelta(days=2, hours=3, minutes=15)
+        old_ts_str = old_time.strftime("%Y-%m-%d %H:%M:%S")
+
+        chunk_old = f"""topic: /test_old
+ts: {old_ts_str}
+data: Old test message
+---"""
+
+        result_old = self.state_manager.add_to_chunk_dt(chunk_old)
+        assert f"ts: {old_ts_str} (" in result_old, "Should add time ago to old timestamp"  # noqa: E501
+        assert "2d" in result_old, "Should show days in time difference"
+        assert "3h" in result_old, "Should show hours in time difference"
+        assert "15m" in result_old, "Should show minutes in time difference"
+        assert "ago)" in result_old, "Should end with 'ago)'"
+
+        # Test chunk with very recent timestamp (seconds only)
+        very_recent_time = current_time - timedelta(seconds=45)
+        very_recent_ts_str = very_recent_time.strftime("%Y-%m-%d %H:%M:%S")
+
+        chunk_very_recent = f"""topic: /test_very_recent
+ts: {very_recent_ts_str}
+data: Very recent test message
+---"""
+
+        result_very_recent = self.state_manager.add_to_chunk_dt(
+            chunk_very_recent)
+        assert f"ts: {very_recent_ts_str} (" in result_very_recent, "Should add time ago to very recent timestamp"  # noqa: E501
+        assert "45s ago)" in result_very_recent, "Should show seconds only for very recent timestamp"  # noqa: E501
+
+        # Test chunk with multiple lines and preserve formatting
+        multi_line_chunk = f"""topic: /test_multiline
+ts: {recent_ts_str}
+data: This is a test message
+with multiple lines
+and various content
+---"""
+
+        result_multi = self.state_manager.add_to_chunk_dt(multi_line_chunk)
+        assert f"ts: {recent_ts_str} (" in result_multi, "Should add time ago to multi-line chunk"  # noqa: E501
+        assert "with multiple lines" in result_multi, "Should preserve multi-line content"  # noqa: E501
+        assert "and various content" in result_multi, "Should preserve all content"  # noqa: E501
+
+        # Test static method _format_time_ago directly
+        from datetime import timedelta
+
+        # Test zero time difference
+        zero_diff = timedelta(seconds=0)
+        assert self.state_manager._format_time_ago(zero_diff) == "0s ago"
+
+        # Test seconds only
+        seconds_diff = timedelta(seconds=42)
+        assert self.state_manager._format_time_ago(seconds_diff) == "42s ago"
+
+        # Test minutes and seconds
+        min_sec_diff = timedelta(minutes=3, seconds=25)
+        assert self.state_manager._format_time_ago(
+            min_sec_diff) == "3m 25s ago"
+
+        # Test hours, minutes, and seconds
+        hour_min_sec_diff = timedelta(hours=2, minutes=15, seconds=30)
+        assert self.state_manager._format_time_ago(
+            hour_min_sec_diff) == "2h 15m 30s ago"
+
+        # Test days, hours, minutes, and seconds
+        full_diff = timedelta(days=1, hours=5, minutes=45, seconds=12)
+        assert self.state_manager._format_time_ago(
+            full_diff) == "1d 5h 45m 12s ago"
+
+        # Test edge case: only days
+        days_only_diff = timedelta(days=3)
+        assert self.state_manager._format_time_ago(days_only_diff) == "3d ago"
+
+        # Test edge case: only hours
+        hours_only_diff = timedelta(hours=4)
+        assert self.state_manager._format_time_ago(hours_only_diff) == "4h ago"
+
+        print("All add_to_chunk_dt tests passed!")
