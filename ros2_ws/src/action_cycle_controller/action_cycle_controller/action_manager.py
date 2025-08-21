@@ -301,7 +301,7 @@ class ActionManager:
             self.running_actions[action_name] = state
 
         # Execute action
-        self.node.get_logger().info(f'Executing action: {action_name}')
+        self.node.get_logger().debug(f'Executing action: {action_name}')
         return self._execute_action(state)
 
     def _execute_action(self, state: ActionState) -> ActionResult:
@@ -592,7 +592,7 @@ class ActionManager:
                 f'Failed to cancel action: {action_name}')
             return
 
-        self.node.get_logger().info(
+        self.node.get_logger().debug(
             f'Successfully cancelled action: {action_name}')
         self._complete_action(action_name, ActionResult.CANCELED)
 

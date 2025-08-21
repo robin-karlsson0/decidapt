@@ -246,7 +246,7 @@ class ActionDecisionActionServer(Node):
         dt = t1 - t0
 
         goal_handle.succeed()
-        self.get_logger().info(f"Return '{result.pred_action}' ({dt:.2f} s)")
+        self.get_logger().debug(f"Return '{result.pred_action}' ({dt:.2f} s)")
 
         # Write prediction IO example to file
         if self.log_pred_io_pth:
@@ -317,7 +317,7 @@ class ActionDecisionActionServer(Node):
         dt = t1 - t0
 
         goal_handle.succeed()
-        self.get_logger().info(f"Return '{result.pred_action}' ({dt:.2f} s)")
+        self.get_logger().debug(f"Return '{result.pred_action}' ({dt:.2f} s)")
 
         # Write prediction IO example to file
         if self.log_pred_io_pth:
