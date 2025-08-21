@@ -244,7 +244,7 @@ class StateManager(Node):
                 f.write(self.format_state_chunk(topic, msg_ts_str, msg.data))
 
         self._publish_state()
-        self.get_logger().info(
+        self.get_logger().debug(
             f'Added event state chunk from {topic}. Popped {popped_chunks} chunks.'  # noqa
         )
 
@@ -270,7 +270,7 @@ class StateManager(Node):
                 f.write(self.format_state_chunk(topic, msg_ts_str, msg.data))
 
         self._publish_state()
-        self.get_logger().info(
+        self.get_logger().debug(
             f'Added continuous state chunk from {topic}. Popped {popped_chunks} chunks.'  # noqa
         )
 
@@ -296,7 +296,7 @@ class StateManager(Node):
                 f.write(self.format_state_chunk(topic, msg_ts_str, msg.data))
 
         self._publish_state()
-        self.get_logger().info(
+        self.get_logger().debug(
             f'Added thought state chunk from {topic}. Popped {popped_chunks} chunks.'  # noqa
         )
 
