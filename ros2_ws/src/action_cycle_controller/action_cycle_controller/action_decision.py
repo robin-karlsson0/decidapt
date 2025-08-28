@@ -9,6 +9,7 @@ from exodapt_robot_interfaces.action import ActionDecision
 from exodapt_robot_pt import action_decision_pt
 from rclpy.action import ActionServer
 from rclpy.node import Node
+from std_msgs.msg import String
 
 
 class ActionDecisionActionServer(Node):
@@ -103,6 +104,7 @@ class ActionDecisionActionServer(Node):
             'action_server_name',
             'action_decision_action_server',
         )
+        self.declare_parameter('action_decision_topic', '/action_decision')
         self.declare_parameter('log_pred_io_pth', '')
 
         # LLM inference params
@@ -111,9 +113,12 @@ class ActionDecisionActionServer(Node):
         self.declare_parameter('max_tokens', 1)  # NOTE: Single token output
         self.declare_parameter('llm_temp', 0.0)
         self.declare_parameter('llm_seed', 14)
+        self.declare_parameter('max_retries', 3)
 
         self.action_server_name = self.get_parameter(
             'action_server_name').value
+        self.action_decision_topic = self.get_parameter(
+            'action_decision_topic').value
         self.log_pred_io_pth = self.get_parameter('log_pred_io_pth').value
         self.inference_server_type = self.get_parameter(
             'inference_server_type').value
@@ -122,17 +127,20 @@ class ActionDecisionActionServer(Node):
         self.max_tokens = self.get_parameter('max_tokens').value
         self.llm_temp = self.get_parameter('llm_temp').value
         self.llm_seed = self.get_parameter('llm_seed').value
+        self.max_retries = self.get_parameter('max_retries').value
 
         self.get_logger().info(
             'ActionDecisionActionServer initializing\n'
             'Parameters:\n'
             f'  action_server_name: {self.action_server_name}\n'
+            f'  action_decision_topic: {self.action_decision_topic}\n'
             f'  log_pred_io_pth: {self.log_pred_io_pth}\n'
             f'  inference_server_type: {self.inference_server_type}\n'
             f'  Inference server url: {self.inference_server_url}\n'
             f'  max_tokens: {self.max_tokens}\n'
             f'  llm_temp: {self.llm_temp}\n'
-            f'  llm_seed: {self.llm_seed}')
+            f'  llm_seed: {self.llm_seed}\n'
+            f'  max_retries: {self.max_retries}\n')
 
         # Configure inference server type and corresponding client/callback
         if self.inference_server_type.lower() == 'tgi':
@@ -153,8 +161,17 @@ class ActionDecisionActionServer(Node):
             execute_callback=self.execute_callback,
         )
 
+        self._action_decision_pub = self.create_publisher(
+            String,
+            self.action_decision_topic,
+            10,
+        )
+
         # All valid actions represented by a single token output
         self.do_nothing_action = 'a'
+
+        # Store previous action to limit idle messages
+        self.prev_action = None
 
         # Create log directory
         if self.log_pred_io_pth:
@@ -310,6 +327,14 @@ class ActionDecisionActionServer(Node):
             seed=self.llm_seed)
         pred_action = output.choices[0].message.content
 
+        # Limit 'do nothing' action decision messages
+        is_idle = pred_action == self.do_nothing_action
+        is_prev_idle = self.prev_action == self.do_nothing_action
+        if not (is_idle and is_prev_idle):
+            action_msg = String()
+            action_msg.data = f'Robot action decision: {pred_action}'
+            self._action_decision_pub.publish(action_msg)
+
         result = ActionDecision.Result()
         result.pred_action = pred_action
 
@@ -317,7 +342,7 @@ class ActionDecisionActionServer(Node):
         dt = t1 - t0
 
         goal_handle.succeed()
-        self.get_logger().info(f"Return '{result.pred_action}' ({dt:.2f} s)")
+        self.get_logger().info(f"Action '{pred_action}' ({dt:.2f} s)")
 
         # Write prediction IO example to file
         if self.log_pred_io_pth:
