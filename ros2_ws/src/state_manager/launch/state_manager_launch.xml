@@ -12,7 +12,7 @@
     <arg name="long_term_memory_file_pth" default=""/>
     <arg name="state_file_pth" default=""/>
 
-    <node pkg="state_manager" exec="state_manager" name="state_manager">
+    <node pkg="state_manager" exec="state_manager" name="state_manager" output="screen" emulate_tty="true">
         <param name="state_topic_name" value="$(var state_topic_name)"/>
         <param name="llm_model_name" value="$(var llm_model_name)"/>
         <param name="event_queue_max_tokens" value="$(var event_queue_max_tokens)"/>

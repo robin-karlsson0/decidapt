@@ -10,7 +10,7 @@
     <arg name="llm_seed" default="14" description="Seed for reproducible LLM results"/>
     <arg name="max_retries" default="3" description="Maximum number of retries for LLM inference in case of failure"/>
 
-    <node pkg="action_cycle_controller" exec="action_decision" name="action_decision">
+    <node pkg="action_cycle_controller" exec="action_decision" name="action_decision" output="screen" emulate_tty="true">
         <param name="action_server_name" value="$(var action_server_name)"/>
         <param name="action_decision_topic" value="$(var action_decision_topic)"/>
         <param name="log_pred_io_pth" value="$(var log_pred_io_pth)"/>

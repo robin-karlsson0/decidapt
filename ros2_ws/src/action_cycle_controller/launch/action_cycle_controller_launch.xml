@@ -6,7 +6,7 @@
     <arg name="action_running_topic" default="/action_running" description="Topic for running actions status msg"/>
     <arg name="status_topic" default="/state" description="Topic for the state manager status message"/>
 
-    <node pkg="action_cycle_controller" exec="action_cycle_controller" name="action_cycle_controller">
+    <node pkg="action_cycle_controller" exec="action_cycle_controller" name="action_cycle_controller" output="screen" emulate_tty="true">
         <param name="ac_freq" value="$(var ac_freq)"/>
         <param name="action_config" value="$(var ac_freq)"/>
         <param name="action_event_topic" value="$(var action_event_topic)"/>
