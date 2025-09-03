@@ -9,6 +9,7 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from std_msgs.msg import String
+from std_srvs.srv import Trigger
 from transformers import AutoTokenizer
 
 RUNNING_ACTIONS_DEFAULT_STR = 'None'
@@ -61,6 +62,11 @@ class StateManager(Node):
             -p continuous_queue_max_tokens:=2000 \
             -p thought_queue_max_tokens:=2000
 
+    Services:
+        sweep_state (std_srvs/srv/Trigger): Clears all state chunks from all
+            queues. Can be disabled by setting enable_sweep_service:=false
+            parameter.
+
     TODO:
         - LLM based state chunk filter functionality.
     """
@@ -81,6 +87,7 @@ class StateManager(Node):
         self.declare_parameter('action_running_topic', '/action_running')
         self.declare_parameter('long_term_memory_file_pth', '')
         self.declare_parameter('state_file_pth', '')
+        self.declare_parameter('enable_sweep_service', True)
 
         self.state_topic_name = self.get_parameter('state_topic_name').value
         self.llm_model_name = self.get_parameter('llm_model_name').value
@@ -100,6 +107,8 @@ class StateManager(Node):
         self.ltm_file_pth = self.get_parameter(
             'long_term_memory_file_pth').value
         self.state_file_pth = self.get_parameter('state_file_pth').value
+        self.enable_sweep_service = self.get_parameter(
+            'enable_sweep_service').value
 
         self.get_logger().info(
             'StateManager initializing\n'
@@ -114,7 +123,8 @@ class StateManager(Node):
             f'  thought_topics: {self.thought_topics}\n'
             f'  action_running_topic: {self.action_running_topic}\n'
             f'  long_term_memory_file_pth: {self.ltm_file_pth}\n'
-            f'  state_file_pth: {self.state_file_pth}')
+            f'  state_file_pth: {self.state_file_pth}\n'
+            f'  enable_sweep_service: {self.enable_sweep_service}')
 
         # LLM tokenizer for measuring state length
         self.tokenizer = AutoTokenizer.from_pretrained(self.llm_model_name)
@@ -189,6 +199,14 @@ class StateManager(Node):
         else:
             self.state_file_pth = None
             self.get_logger().info('No state file specified')
+
+        # Create state sweep service if enabled
+        if self.enable_sweep_service:
+            self.sweep_service = self.create_service(
+                Trigger, 'sweep_state', self._sweep_state_callback)
+            self.get_logger().info('Sweep state service created')
+        else:
+            self.get_logger().info('Sweep state service disabled')
 
     def _create_subscribers(self):
         """Create subscribers for continuous and event-driven topics."""
@@ -343,6 +361,34 @@ class StateManager(Node):
             self.running_actions = RUNNING_ACTIONS_DEFAULT_STR
 
         self._publish_state()
+
+    def _sweep_state_callback(self, request, response):
+        """Sweep (clear) all state chunks from all queues."""
+        # Count chunks before clearing for logging
+        event_count = len(self.event_queue)
+        continuous_count = len(self.continuous_queue)
+        thought_count = len(self.thought_queue)
+        total_count = event_count + continuous_count + thought_count
+
+        # Clear all queues atomically
+        self.event_queue = deque()
+        self.continuous_queue = deque()
+        self.thought_queue = deque()
+
+        # Publish updated (empty) state
+        self._publish_state()
+
+        # Prepare response
+        response.success = True
+        response.message = (
+            f'State swept successfully. Cleared {total_count} chunks '
+            f'(event: {event_count}, continuous: {continuous_count}, '
+            f'thought: {thought_count})')
+
+        # Log the operation
+        self.get_logger().info(f'Sweep state completed: {response.message}')
+
+        return response
 
     def _publish_state(self):
         """Publish the current state."""

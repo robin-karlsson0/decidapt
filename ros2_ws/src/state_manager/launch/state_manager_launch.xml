@@ -11,6 +11,7 @@
     <arg name="action_running_topic" default="/action_running"/>
     <arg name="long_term_memory_file_pth" default=""/>
     <arg name="state_file_pth" default=""/>
+    <arg name="enable_sweep_service" default="false"/>
 
     <node pkg="state_manager" exec="state_manager" name="state_manager" output="screen" emulate_tty="true">
         <param name="state_topic_name" value="$(var state_topic_name)"/>
@@ -24,5 +25,6 @@
         <param name="action_running_topic" value="$(var action_running_topic)"/>
         <param name="long_term_memory_file_pth" value="$(var long_term_memory_file_pth)"/>
         <param name="state_file_pth" value="$(var state_file_pth)"/>
+        <param name="enable_sweep_service" value="$(var enable_sweep_service)"/>
     </node>
 </launch>
