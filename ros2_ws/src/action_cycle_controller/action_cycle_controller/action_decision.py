@@ -326,6 +326,7 @@ class ActionDecisionActionServer(Node):
             temperature=self.llm_temp,
             seed=self.llm_seed)
         pred_action = output.choices[0].message.content
+        tokens = int(output.usage.total_tokens)
 
         # Limit 'do nothing' action decision messages
         is_idle = pred_action == self.do_nothing_action
@@ -342,7 +343,9 @@ class ActionDecisionActionServer(Node):
         dt = t1 - t0
 
         goal_handle.succeed()
-        self.get_logger().info(f"Action '{pred_action}' ({dt:.2f} s)")
+        tokens_str = await self.format_number(tokens)
+        self.get_logger().info(
+            f"Action '{pred_action}' ({dt:.2f} s, {tokens_str} tokens)")
 
         # Write prediction IO example to file
         if self.log_pred_io_pth:
@@ -400,6 +403,39 @@ class ActionDecisionActionServer(Node):
             self.get_logger().error(
                 f"Failed to log prediction IO example: {e}")
             return
+
+    @staticmethod
+    async def format_number(num: int, decimals: int = 2) -> str:
+        """
+        Format an integer with appropriate quantity suffixes (K, M, B, T).
+
+        Args:
+            num (int): The number to format
+            decimals (int): Number of decimals to display
+
+        NOTE The underscore `_` in integer literals is a digit separator for
+            readability.
+
+        Returns:
+            str: Formatted string with 1 decimal place and suffix
+        """
+        if num < 1000:
+            return str(num)
+
+        # Define the suffixes and their corresponding divisors
+        suffixes = [
+            (1_000_000_000_000, 'T'),  # Trillion
+            (1_000_000_000, 'B'),  # Billion
+            (1_000_000, 'M'),  # Million
+            (1_000, 'K')  # Thousand
+        ]
+
+        for divisor, suffix in suffixes:
+            if num >= divisor:
+                result = num / divisor
+                return f"{result:.{decimals}f}{suffix}"
+
+        return str(num)
 
 
 def main(args=None):
