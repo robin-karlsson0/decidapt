@@ -6,8 +6,10 @@ from itertools import islice
 
 @dataclass
 class StateChunk:
+    """Representation for one unit of state chunk information."""
     chunk: str
     token_len: int
+    ts: float
 
 
 class StateChunkSequence:
