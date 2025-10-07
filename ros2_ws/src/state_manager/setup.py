@@ -7,7 +7,7 @@ package_name = 'state_manager'
 
 setup(
     name=package_name,
-    version='0.0.1',
+    version='1.0.0',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages',
@@ -31,6 +31,7 @@ setup(
     entry_points={
         'console_scripts': [
             'state_manager = ' + package_name + '.state_manager:main',
+            'state_manager_2 = ' + package_name + '.state_manager_2:main',
         ],
     },
 )

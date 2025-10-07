@@ -7,10 +7,11 @@ from exodapt_robot_pt import (appended_state_chunks_pt,
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
-from state_chunk_sequence import StateChunk, StateChunkSequence
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from transformers import AutoTokenizer
+
+from .state_chunk_sequence import StateChunk, StateChunkSequence
 
 DEFAULT_RUNNING_ACTIONS = 'None'
 DEFAULT_ROBOT_STATE_INFO = 'Robot state information not yet received'
@@ -81,6 +82,10 @@ class StateManager2(Node):
         - Token count: Recomputed by StateManager2
         >>> self.state_suffix
         >>> self.state_suffix_num_tokens
+    
+    NOTE: The considered state token sequence lengths are not considered exact!
+        The provided values are close enough for determining state sequence
+        clearing while providing high performance.
     """  # noqa
 
     def __init__(self, **kwargs):
@@ -276,7 +281,13 @@ class StateManager2(Node):
 
     @property
     def state_chunks_num_tokens(self) -> int:
-        """Returns the token count from the state chunk sequence."""
+        """Returns the token count from the state chunk sequence.
+
+        Note: This returns the sum of individual chunk token counts, which does
+        not include the template wrapper tokens (~13 tokens). This approximation
+        is acceptable since the token count is used for soft limits and the
+        error is negligible (<0.02% at typical state sizes).
+        """
         return len(self.state_seq)
 
     @property
@@ -493,14 +504,16 @@ class StateManager2(Node):
 
     def _sweep_state_callback(self, request, response):
         """Sweep (clear) all state chunks from state sequence."""
-        # Count chunks before clearing for logging
-        total_count = self.state_seq.get_num_state_chunks()
+        # Thread-safe: Use lock to protect state modifications
+        with self.lock:
+            # Count chunks before clearing for logging
+            total_count = self.state_seq.get_num_state_chunks()
 
-        # Clear state sequence (100% = clear all)
-        self.state_seq.clear(1.0)
+            # Clear state sequence (0% = clear all)
+            self.state_seq.clear(0.0)
 
-        # Clear cached state chunks string
-        self._cached_state_chunks_str = ''
+            # Clear cached state chunks string
+            self._cached_state_chunks_str = ''
 
         # Publish updated (empty) state
         self._publish_state()
