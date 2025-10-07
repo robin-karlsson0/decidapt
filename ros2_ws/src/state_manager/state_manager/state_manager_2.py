@@ -1,10 +1,9 @@
+import threading
 from datetime import datetime
 
 import rclpy
 from exodapt_robot_pt import (appended_state_chunks_pt,
-                              dynamic_state_suffix_pt,
-                              state_representation_2_pt,
-                              static_state_prefix_pt)
+                              dynamic_state_suffix_pt, static_state_prefix_pt)
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
@@ -13,10 +12,76 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from transformers import AutoTokenizer
 
-RUNNING_ACTIONS_DEFAULT_STR = 'None'
+DEFAULT_RUNNING_ACTIONS = 'None'
+DEFAULT_ROBOT_STATE_INFO = 'Robot state information not yet received'
+
+# To be replaced with actual implemnetation
+ROBOT_DESCRIPTION = 'Robot description'
+STATE_REPRESENTATION_STRUCTURE = 'State representation structure'
+PERSONALITY_PROFILE = 'Personality profile'
+AGENCY_DESCRIPTION = 'Agency description'
+TOPIC_AND_ACTION_DESCRIPTION = 'Topic and action description'
 
 
 class StateManager2(Node):
+    """
+
+    Maintained core variables:
+        
+        # State strings
+        state_prefix - Static prefix containing robot description, personality, etc.
+        state_chunks (property) - Formatted state chunks using template
+        state_suffix (property) - Dynamic suffix with running actions and robot info
+
+        # Token counts
+        state_prefix_num_tokens: Token count of the static prefix (cached)
+        state_chunks_num_tokens (property): Token count from state_seq
+        state_suffix_num_tokens (property): Token count of the dynamic suffix (recomputed each access)
+
+        state_seq: StateChunkSequence object managing the queue of state chunks
+            _cached_state_chunks_str: Cached string representation of all state chunks (for performance)
+        _cached_running_actions: Cached current running actions string
+        _cached_robot_state_info: Cached robot state information string
+
+    Core methods
+        get_state()
+        get_state_token_len() or len(state_manager_2)
+        _publish_state()
+        
+
+    State chunk processing flow:
+        1. A subscribed topic publishes a msg
+
+        2. A callback function processes the msg
+            event_msg_callback()
+            _process_message()
+
+        3. The msg is formatted into a StateChunk and appended to sequence
+            - Sequence is cleared if its length will be over max token length
+        
+        4. The updated state is published
+            get_state()
+            state_pub.publish()
+
+    State Structure:
+
+        [Static prefix]
+        - Token count: Stored in StateManager2
+        >>> self.state_prefix
+        >>> self.state_prefix_num_tokens
+
+        [Appended state chunk sequence]
+        - Token count: Managed by StateChunkSequence
+        >>> self.state_chunks
+                _cached_state_chunks_str
+                template(_cached_state_chunks_str)
+        >>> self.state_chunks_num_tokens
+
+        [Dynamic suffix]
+        - Token count: Recomputed by StateManager2
+        >>> self.state_suffix
+        >>> self.state_suffix_num_tokens
+    """  # noqa
 
     def __init__(self, **kwargs):
         super().__init__('state_manager_2', **kwargs)
@@ -32,6 +97,7 @@ class StateManager2(Node):
         self.declare_parameter('continuous_topics', string_array_param)
         self.declare_parameter('thought_topics', string_array_param)
         self.declare_parameter('action_running_topic', '/action_running')
+        self.declare_parameter('robot_state_info_topic', '/robot_state_info')
         self.declare_parameter('long_term_memory_file_pth', '')
         self.declare_parameter('state_file_pth', '')
         self.declare_parameter('enable_sweep_service', True)
@@ -49,6 +115,8 @@ class StateManager2(Node):
         self.thought_topics = self.get_parameter('thought_topics').value
         self.action_running_topic = self.get_parameter(
             'action_running_topic').value
+        self.robot_state_info_topic = self.get_parameter(
+            'robot_state_info_topic').value
         self.ltm_file_pth = self.get_parameter(
             'long_term_memory_file_pth').value
         self.state_file_pth = self.get_parameter('state_file_pth').value
@@ -66,6 +134,7 @@ class StateManager2(Node):
             f'  continuous_topics: {self.continuous_topics}\n'
             f'  thought_topics: {self.thought_topics}\n'
             f'  action_running_topic: {self.action_running_topic}\n'
+            f'  robot_state_info_topic: {self.robot_state_info_topic}\n'
             f'  long_term_memory_file_pth: {self.ltm_file_pth}\n'
             f'  state_file_pth: {self.state_file_pth}\n'
             f'  enable_sweep_service: {self.enable_sweep_service}')
@@ -82,24 +151,36 @@ class StateManager2(Node):
             )
             raise IOError()
 
-        # Retrieved from long-term memory
-        self.state_retr_mem = ''
-        self.state_retr_mem_len = 0
+        ##########################
+        #  State Representation
+        ##########################
 
         # Queue stores (state_chunk, timestamp, token_length) tuples
         self.state_seq = StateChunkSequence(self.state_max_tokens)
 
-        # Cached state chunks string to avoid regenerating on every get_state()
+        # State prefix and token count are static values
+        self.state_prefix = static_state_prefix_pt(
+            ROBOT_DESCRIPTION,
+            STATE_REPRESENTATION_STRUCTURE,
+            PERSONALITY_PROFILE,
+            AGENCY_DESCRIPTION,
+            TOPIC_AND_ACTION_DESCRIPTION,
+        )
+        self.state_prefix_num_tokens = self.get_token_len(self.state_prefix)
+
+        # Appended state chunks managed by state chunk sequence and templated
+        # by StateManager2
         self._cached_state_chunks_str = ''
 
-        # Initialize cached token counts for incremental tracking
-        self.state_prefix = static_state_prefix_pt('', '', '', '', '', '', '')
-        self.state_chunks = appended_state_chunks_pt('')
-        self.state_suffix = dynamic_state_suffix_pt('', '', '', '', '')
+        # Cached results of state suffix components
+        self._cached_running_actions = ''
+        self._cached_robot_state_info = ''
 
-        self.state_prefix_tokens = self.get_token_len(self.state_prefix)
-        self.state_chunks_tokens = self.get_token_len(self.state_chunks)
-        self.state_suffix_tokens = self.get_token_len(self.state_suffix)
+        self.lock = threading.Lock()
+
+        ######################
+        #  Long-Term Memory
+        ######################
 
         # Long-term memory file initialization
         if self.ltm_file_pth:
@@ -107,22 +188,22 @@ class StateManager2(Node):
             self.get_logger().info(
                 f'Writing Long-term memory to file: {self.long_term_memory_file_pth}'  # noqa
             )
-            with open(self.long_term_memory_file_pth, 'w') as f:
-                f.write('')
+            try:
+                with open(self.long_term_memory_file_pth, 'w') as f:
+                    f.write('')
+            except IOError as e:
+                self.get_logger().error(
+                    f'Failed to initialize long-term memory file: {e}')
+                self.long_term_memory_file_pth = None
         else:
             self.long_term_memory_file_pth = None
 
+        ################################
+        #  Subscribers and Publishers
+        ################################
+
         # Create subscribers for both queue types
         self.subscribers = self._create_subscribers()
-
-        # Create running actions subscriber
-        self.running_action_sub = self.create_subscription(
-            String,
-            self.action_running_topic,
-            self._action_running_sub_callback,
-            10,
-        )
-        self.running_actions = RUNNING_ACTIONS_DEFAULT_STR
 
         # Create QoS profile with transient local durability
         qos_profile = QoSProfile(
@@ -143,13 +224,39 @@ class StateManager2(Node):
             f'Initial state length: {self.get_token_len(initial_state)} tokens'
         )
 
+        # State suffix subscriptions
+        self.running_action_sub = self.create_subscription(
+            String,
+            self.action_running_topic,
+            self._action_running_sub_callback,
+            10,
+        )
+        self._cached_running_actions = DEFAULT_RUNNING_ACTIONS
+
+        self.robot_state_info_sub = self.create_subscription(
+            String,
+            self.robot_state_info_topic,
+            self._robot_state_info_callback,
+            10,
+        )
+        self._cached_robot_state_info = DEFAULT_ROBOT_STATE_INFO
+
+        #######################
+        #  Optional Features
+        #######################
+
         # Optional "state-to-file" functionality for easily observing state
         if self.state_file_pth:
             self.get_logger().info(
                 f'Writing state to file: {self.state_file_pth}')
-            state = self.get_state()
-            with open(self.state_file_pth, 'w') as f:
-                f.write(state)
+            try:
+                state = self.get_state()
+                with open(self.state_file_pth, 'w') as f:
+                    f.write(state)
+            except IOError as e:
+                self.get_logger().error(
+                    f'Failed to initialize state file: {e}')
+                self.state_file_pth = None
         else:
             self.state_file_pth = None
             self.get_logger().info('No state file specified')
@@ -161,6 +268,37 @@ class StateManager2(Node):
             self.get_logger().info('Sweep state service created')
         else:
             self.get_logger().info('Sweep state service disabled')
+
+    @property
+    def state_chunks(self) -> str:
+        """Returns a formatted state chunks string."""
+        return appended_state_chunks_pt(self._cached_state_chunks_str)
+
+    @property
+    def state_chunks_num_tokens(self) -> int:
+        """Returns the token count from the state chunk sequence."""
+        return len(self.state_seq)
+
+    @property
+    def state_suffix(self):
+        """Generate a state suffix using cached and real-time information.
+
+        Note: Cached variables may be updated concurrently by callbacks.
+        Brief inconsistency is acceptable for this use case.
+        """
+        return dynamic_state_suffix_pt(
+            self._cached_running_actions,
+            self._cached_robot_state_info,
+        )
+
+    @property
+    def state_suffix_num_tokens(self):
+        """Counts number of tokens in the current state suffix.
+
+        NOTE: The state suffix is presumed very small and dynamic. Recounting
+            the number of tokens every time is sensible.
+        """
+        return self.get_token_len(self.state_suffix)
 
     ####################
     #  Initialization
@@ -206,15 +344,39 @@ class StateManager2(Node):
     ######################################################
 
     def event_msg_callback(self, msg, topic):
-        """Handle event topic messages."""
+        """Handle event topic messages.
+
+        Currently delegates to _process_message. This routing layer is
+        maintained for future type-specific processing capabilities.
+
+        Args:
+            msg: ROS String message
+            topic: Topic name from which message was received
+        """
         self._process_message(msg, topic)
 
     def continuous_msg_callback(self, msg, topic):
-        """Handle continuous topic messages."""
+        """Handle continuous topic messages.
+
+        Currently delegates to _process_message. This routing layer is
+        maintained for future type-specific processing capabilities.
+
+        Args:
+            msg: ROS String message
+            topic: Topic name from which message was received
+        """
         self._process_message(msg, topic)
 
     def thought_msg_callback(self, msg, topic):
-        """Handle thought topic messages."""
+        """Handle thought topic messages.
+
+        Currently delegates to _process_message. This routing layer is
+        maintained for future type-specific processing capabilities.
+
+        Args:
+            msg: ROS String message
+            topic: Topic name from which message was received
+        """
         self._process_message(msg, topic)
 
     def _process_message(
@@ -224,12 +386,11 @@ class StateManager2(Node):
     ):
         """Common message processing logic for all state chunk types.
 
+        Thread-safe: Uses lock to protect shared state during modifications.
+
         Args:
             msg: ROS message
             topic: Topic name
-
-        Returns:
-            int: Number of chunks popped from the queue
         """
         # Get timestamp
         msg_ts = self.get_clock().now().to_msg()
@@ -241,39 +402,34 @@ class StateManager2(Node):
         new_chunk = self.format_state_chunk(topic, msg_ts_str, msg.data)
         new_num_tokens = self.get_token_len(new_chunk)
 
-        # TODO: Add lock
-        # Check if state chunk sequence token length will overflow
-        # Use cached token count instead of calling get_state_len()
-        total_with_new = self._cached_total_state_tokens + new_num_tokens
-        if total_with_new >= self.state_max_tokens:
-            self.state_seq.clear(self.state_seq_clear_ratio)
-            # Regenerate cached string from remaining chunks
-            state_chunks = [
-                state_chunk.chunk for state_chunk in self.state_seq
-            ]
-            self._cached_state_chunks_str = '\n'.join(state_chunks)
-            # Recalculate state chunks token count after clearing
-            self._state_chunks_tokens = self.state_seq.get_token_len()
-            self._cached_total_state_tokens = (self._static_template_tokens +
-                                               self._state_chunks_tokens +
-                                               self._running_actions_tokens)
+        # Critical section: check overflow and append
+        with self.lock:
+            total_with_new = self.get_state_token_len() + new_num_tokens
+            if total_with_new >= self.state_max_tokens:
+                self.state_seq.clear(self.state_seq_clear_ratio)
+                # Regenerate cached string from remaining chunks
+                state_chunks = [
+                    state_chunk.chunk for state_chunk in self.state_seq
+                ]
+                self._cached_state_chunks_str = '\n'.join(state_chunks)
 
-        self.state_seq.append(StateChunk(new_chunk, new_num_tokens, ts))
+            # Append new chunk
+            self.state_seq.append(StateChunk(new_chunk, new_num_tokens, ts))
 
-        # Append new chunk to cached string
-        if self._cached_state_chunks_str:
-            self._cached_state_chunks_str += '\n' + new_chunk
-        else:
-            self._cached_state_chunks_str = new_chunk
-
-        # Update token counts incrementally
-        self._state_chunks_tokens += new_num_tokens
-        self._cached_total_state_tokens += new_num_tokens
+            # Update cached string
+            if self._cached_state_chunks_str:
+                self._cached_state_chunks_str += '\n' + new_chunk
+            else:
+                self._cached_state_chunks_str = new_chunk
 
         # Write to long-term memory
         if self.long_term_memory_file_pth:
-            with open(self.long_term_memory_file_pth, 'a') as f:
-                f.write(new_chunk)
+            try:
+                with open(self.long_term_memory_file_pth, 'a') as f:
+                    f.write(new_chunk + '\n')
+            except IOError as e:
+                self.get_logger().error(
+                    f'Failed to write to long-term memory file: {e}')
 
         # Publish updated state
         self._publish_state()
@@ -287,53 +443,51 @@ class StateManager2(Node):
 
         # Optionally write state to file
         if self.state_file_pth:
-            with open(self.state_file_pth, 'w') as f:
-                f.write(state)
+            try:
+                with open(self.state_file_pth, 'w') as f:
+                    f.write(state)
+            except IOError as e:
+                self.get_logger().error(f'Failed to write state to file: {e}')
 
     def get_state(self) -> str:
-        """Return current state as a string with appended state chunks order."""
+        """Return current state as a string with appended state chunks.
 
-        # Use cached state chunk sequence string
-        state_chunks = self._cached_state_chunks_str
-        self.state_chunks = appended_state_chunks_pt(state_chunks)
+        Note: Reads cached variables that may be updated concurrently.
+        Brief inconsistency between components is acceptable.
 
-        # TODO Components
-        dynamic_situation_assessment = ''
-        dynamic_current_context_summary = ''
-        dynamic_retrieved_mem = ''
-        dynamic_running_actions = ''
-        dynamic_robot_state_info = ''
-
-        self.state_suffix = dynamic_state_suffix_pt(
-            dynamic_situation_assessment,
-            dynamic_current_context_summary,
-            dynamic_retrieved_mem,
-            dynamic_running_actions,
-            dynamic_robot_state_info,
-        )
-
+        Returns:
+            str: Complete state representation including prefix, chunks,
+            and suffix.
+        """
         state = self.state_prefix + self.state_chunks + self.state_suffix
-
         return state
 
     ##############################
     #  Supporting functionality
     ##############################
 
-    def _action_running_sub_callback(self, msg):
-        """Stores latest running actions msg and publish updated state."""
-        running_actions = msg.data
-        # Default string if message no running actions
-        if len(running_actions) > 0:
-            self.running_actions = msg.data
-        else:
-            self.running_actions = RUNNING_ACTIONS_DEFAULT_STR
+    def _action_running_sub_callback(self, msg: String):
+        """Stores the latest running actions msg and publish updated state.
 
-        # Update running actions token count
-        old_running_actions_tokens = self._running_actions_tokens
-        self._running_actions_tokens = self.get_token_len(self.running_actions)
-        self._cached_total_state_tokens += (self._running_actions_tokens -
-                                            old_running_actions_tokens)
+        Thread-safe: Updates cached running actions under lock protection.
+        """
+        running_actions = msg.data.strip()
+
+        with self.lock:
+            if running_actions:
+                self._cached_running_actions = running_actions
+            else:
+                self._cached_running_actions = DEFAULT_RUNNING_ACTIONS
+
+        self._publish_state()
+
+    def _robot_state_info_callback(self, msg: String):
+        """Stores the latest robot state info msg.
+
+        Thread-safe: Updates cached robot state info under lock protection.
+        """
+        with self.lock:
+            self._cached_robot_state_info = msg.data
 
         self._publish_state()
 
@@ -347,11 +501,6 @@ class StateManager2(Node):
 
         # Clear cached state chunks string
         self._cached_state_chunks_str = ''
-
-        # Reset state chunks token count
-        self._state_chunks_tokens = 0
-        self._cached_total_state_tokens = (self._static_template_tokens +
-                                           self._running_actions_tokens)
 
         # Publish updated (empty) state
         self._publish_state()
@@ -383,12 +532,20 @@ class StateManager2(Node):
         return f'\ntopic: {topic}\nts: {ts_str}\ndata: {data}\n---'
 
     def __len__(self):
-        return self.get_state_len()
+        """Return the total token count of the current state.
 
-    def get_state_len(self):
+        Returns:
+            int: Sum of prefix, chunks, and suffix token counts.
+        """
+        return self.get_state_token_len()
+
+    def get_state_token_len(self):
         """Return the token sequence length of the current state."""
-        # Use cached token count instead of regenerating state
-        return self._cached_total_state_tokens
+        num_tokens = (self.state_prefix_num_tokens +
+                      self.state_chunks_num_tokens +
+                      self.state_suffix_num_tokens)
+
+        return num_tokens
 
     def get_token_len(self, s: str) -> int:
         """Return the number of tokens representing a string."""

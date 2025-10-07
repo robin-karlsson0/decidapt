@@ -47,8 +47,12 @@ class StateChunkSequence:
         self.token_len = 0
 
     def __len__(self) -> int:
-        """Returns the sequence token length (NOT number of state chunks!)"""
+        """Return the sequence token length (NOT number of state chunks!)"""
         return self.token_len
+
+    def __iter__(self) -> deque:
+        """Return the state chunk sequence object for upstream iteration."""
+        return iter(self.seq)
 
     def get_token_len(self):
         return self.__len__()
