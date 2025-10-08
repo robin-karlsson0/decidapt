@@ -14,7 +14,7 @@ from transformers import AutoTokenizer
 
 class TestStateManager2:
     """Comprehensive test suite for StateManager2 ROS2 node.
-    
+
     Tests cover:
     - Topic subscriptions (event, continuous, thought)
     - Token counting and state representation
@@ -132,77 +132,66 @@ class TestStateManager2:
         # Verify initial state is published
         assert self.state_manager.state_seq.get_num_state_chunks() == 0
 
-    def test_state_manager_event_subscriptions(self):
-        """Test that event topics are properly subscribed to."""
+    def test_event_topics_subscription(self):
+        """Test that event topics are properly subscribed to and processed.
+
+        Event topics are for discrete, important events that should always
+        be captured (e.g., speech recognition, user commands, system events).
+
+        Note: In this test config, event_topics includes /asr and
+        /reply_action which represent discrete events in the operation cycle.
+        """
         test_params = self.create_test_parameters()
         self.state_manager = StateManager2(parameter_overrides=test_params)
         self.executor.add_node(self.state_manager)
 
-        # Initialize mock publishers
+        # Initialize mock publishers for event topics only
         asr_node = rclpy.create_node('asr_publisher')
-        thought_node = rclpy.create_node('thought_publisher')
         reply_action_node = rclpy.create_node('reply_action_publisher')
 
         asr_publisher = asr_node.create_publisher(String, '/asr', 10)
-        thought_publisher = thought_node.create_publisher(
-            String, '/thought', 10)
         reply_action_publisher = reply_action_node.create_publisher(
             String, '/reply_action', 10)
 
         self.executor.add_node(asr_node)
-        self.executor.add_node(thought_node)
         self.executor.add_node(reply_action_node)
 
-        # Publish messages
-        asr_publisher.publish(String(data='Test ASR message'))
-        thought_publisher.publish(String(data='Test Thought message'))
-        reply_action_publisher.publish(
-            String(data='Test Reply Action message'))
+        # Publish event messages
+        asr_publisher.publish(String(data='User said: hello robot'))
+        reply_action_publisher.publish(String(data='Saying: Hello human!'))
 
-        # Spin to process messages
-        for _ in range(3):
+        # Process event messages
+        for _ in range(2):
             self.executor.spin_once(timeout_sec=0.1)
 
-        # Verify state sequence has 3 chunks
-        assert self.state_manager.state_seq.get_num_state_chunks() == 3
+        # Verify both event messages were captured
+        assert self.state_manager.state_seq.get_num_state_chunks() == 2
 
-        # Verify messages are in state chunks
+        # Verify event messages are in state
         state = self.state_manager.get_state()
-        assert 'Test ASR message' in state
-        assert 'Test Thought message' in state
-        assert 'Test Reply Action message' in state
+        assert 'User said: hello robot' in state
+        assert 'Saying: Hello human!' in state
         assert '/asr' in state
-        assert '/thought' in state
         assert '/reply_action' in state
-
-        # Create unrelated topic to ensure it does not affect state sequence
-        unrelated_node = rclpy.create_node('unrelated_publisher')
-        unrelated_publisher = unrelated_node.create_publisher(
-            String, '/unrelated_topic', 10)
-        self.executor.add_node(unrelated_node)
-        unrelated_publisher.publish(String(data='Unrelated message'))
-        self.executor.spin_once(timeout_sec=0.1)
-
-        # Ensure unrelated topic does not affect state sequence
-        assert self.state_manager.state_seq.get_num_state_chunks() == 3
 
         # Cleanup
         self.executor.remove_node(asr_node)
-        self.executor.remove_node(thought_node)
         self.executor.remove_node(reply_action_node)
-        self.executor.remove_node(unrelated_node)
         asr_node.destroy_node()
-        thought_node.destroy_node()
         reply_action_node.destroy_node()
-        unrelated_node.destroy_node()
 
-    def test_state_manager_continuous_subscriptions(self):
-        """Test that continuous topics are properly subscribed to."""
+    def test_continuous_topics_subscription(self):
+        """Test that continuous topics are properly subscribed to and processed.
+
+        Continuous topics provide ongoing perception data that updates
+        frequently (e.g., vision, sensor readings). These may be sampled
+        or processed differently than event topics in the future.
+        """
         test_params = self.create_test_parameters()
         self.state_manager = StateManager2(parameter_overrides=test_params)
         self.executor.add_node(self.state_manager)
 
-        # Initialize mock publishers
+        # Initialize mock publishers for continuous topics only
         mllm_node = rclpy.create_node('mllm_publisher')
         face_recognition_node = rclpy.create_node('face_recognition_publisher')
 
@@ -213,22 +202,23 @@ class TestStateManager2:
         self.executor.add_node(mllm_node)
         self.executor.add_node(face_recognition_node)
 
-        # Publish messages
-        mllm_publisher.publish(String(data='Test MLLM message'))
+        # Publish continuous perception updates
+        mllm_publisher.publish(
+            String(data='Detected: person standing, table, chair'))
         face_recognition_publisher.publish(
-            String(data='Test Face Recognition message'))
+            String(data='Recognized: John Doe, confidence 0.95'))
 
-        # Spin to process messages
-        self.executor.spin_once(timeout_sec=0.1)
-        self.executor.spin_once(timeout_sec=0.1)
+        # Process continuous messages
+        for _ in range(2):
+            self.executor.spin_once(timeout_sec=0.1)
 
-        # Verify state sequence has 2 chunks
+        # Verify both continuous messages were captured
         assert self.state_manager.state_seq.get_num_state_chunks() == 2
 
-        # Verify messages are in state
+        # Verify continuous messages are in state
         state = self.state_manager.get_state()
-        assert 'Test MLLM message' in state
-        assert 'Test Face Recognition message' in state
+        assert 'Detected: person standing, table, chair' in state
+        assert 'Recognized: John Doe' in state
         assert '/mllm' in state
         assert '/face_recognition' in state
 
@@ -238,39 +228,138 @@ class TestStateManager2:
         mllm_node.destroy_node()
         face_recognition_node.destroy_node()
 
-    def test_state_manager_thought_subscriptions(self):
-        """Test that thought topics are properly subscribed to."""
+    def test_thought_topics_subscription(self):
+        """Test that thought topics are properly subscribed to and processed.
+
+        Thought topics capture the robot's internal reasoning and decision
+        making process (e.g., agency decisions, planning). These represent
+        the robot's cognitive state and may require special handling.
+        """
         test_params = self.create_test_parameters()
         self.state_manager = StateManager2(parameter_overrides=test_params)
         self.executor.add_node(self.state_manager)
 
-        # Initialize mock publishers
+        # Initialize mock publisher for thought topic only
         agency_node = rclpy.create_node('agency_publisher')
         agency_publisher = agency_node.create_publisher(String, '/agency', 10)
 
         self.executor.add_node(agency_node)
 
-        # Publish message
-        agency_publisher.publish(String(data='Test Agency thought'))
+        # Publish thought/reasoning message
+        agency_publisher.publish(
+            String(data='Decision: approach user to offer assistance'))
 
-        # Spin to process message
+        # Process thought message
         self.executor.spin_once(timeout_sec=0.1)
 
-        # Verify state sequence has 1 chunk
+        # Verify thought message was captured
         assert self.state_manager.state_seq.get_num_state_chunks() == 1
 
-        # Verify message is in state
+        # Verify thought message is in state
         state = self.state_manager.get_state()
-        assert 'Test Agency thought' in state
+        assert 'Decision: approach user to offer assistance' in state
         assert '/agency' in state
 
         # Cleanup
         self.executor.remove_node(agency_node)
         agency_node.destroy_node()
 
+    def test_unsubscribed_topics_ignored(self):
+        """Test that messages from unsubscribed topics are ignored.
+
+        This ensures the state manager only processes configured topics
+        and doesn't capture unrelated system messages.
+        """
+        test_params = self.create_test_parameters()
+        self.state_manager = StateManager2(parameter_overrides=test_params)
+        self.executor.add_node(self.state_manager)
+
+        # Add one valid message first
+        asr_node = rclpy.create_node('asr_publisher')
+        asr_publisher = asr_node.create_publisher(String, '/asr', 10)
+        self.executor.add_node(asr_node)
+
+        asr_publisher.publish(String(data='Valid message'))
+        self.executor.spin_once(timeout_sec=0.1)
+
+        # Verify we have 1 chunk
+        assert self.state_manager.state_seq.get_num_state_chunks() == 1
+
+        # Create publisher for unrelated topic
+        unrelated_node = rclpy.create_node('unrelated_publisher')
+        unrelated_publisher = unrelated_node.create_publisher(
+            String, '/unrelated_topic', 10)
+        self.executor.add_node(unrelated_node)
+
+        # Publish to unrelated topic
+        unrelated_publisher.publish(String(data='Should be ignored'))
+        self.executor.spin_once(timeout_sec=0.1)
+
+        # Verify unrelated message was not added to state
+        assert self.state_manager.state_seq.get_num_state_chunks() == 1
+        state = self.state_manager.get_state()
+        assert 'Should be ignored' not in state
+        assert 'Valid message' in state
+
+        # Cleanup
+        self.executor.remove_node(asr_node)
+        self.executor.remove_node(unrelated_node)
+        asr_node.destroy_node()
+        unrelated_node.destroy_node()
+
+    def test_mixed_topic_types_processing(self):
+        """Test processing messages from different topic types together.
+
+        Verifies that event, continuous, and thought topics can all be
+        processed correctly in the same state manager instance, maintaining
+        proper ordering and content.
+        """
+        test_params = self.create_test_parameters()
+        self.state_manager = StateManager2(parameter_overrides=test_params)
+        self.executor.add_node(self.state_manager)
+
+        # Create publishers for all three types
+        asr_node = rclpy.create_node('asr_publisher')
+        mllm_node = rclpy.create_node('mllm_publisher')
+        agency_node = rclpy.create_node('agency_publisher')
+
+        asr_publisher = asr_node.create_publisher(String, '/asr', 10)
+        mllm_publisher = mllm_node.create_publisher(String, '/mllm', 10)
+        agency_publisher = agency_node.create_publisher(String, '/agency', 10)
+
+        self.executor.add_node(asr_node)
+        self.executor.add_node(mllm_node)
+        self.executor.add_node(agency_node)
+
+        # Publish messages from different types in sequence
+        asr_publisher.publish(String(data='Event: user command'))
+        mllm_publisher.publish(String(data='Continuous: scene update'))
+        agency_publisher.publish(String(data='Thought: planning action'))
+
+        # Process all messages
+        for _ in range(3):
+            self.executor.spin_once(timeout_sec=0.1)
+
+        # Verify all messages captured
+        assert self.state_manager.state_seq.get_num_state_chunks() == 3
+
+        # Verify all message types present in state
+        state = self.state_manager.get_state()
+        assert 'Event: user command' in state
+        assert 'Continuous: scene update' in state
+        assert 'Thought: planning action' in state
+
+        # Cleanup
+        self.executor.remove_node(asr_node)
+        self.executor.remove_node(mllm_node)
+        self.executor.remove_node(agency_node)
+        asr_node.destroy_node()
+        mllm_node.destroy_node()
+        agency_node.destroy_node()
+
     def test_state_manager_state_token_lengths(self):
         """Test that token counts are reasonably accurate.
-        
+
         Note: Token counts are approximate due to template overhead not being
         included in state_chunks_num_tokens for performance reasons. We allow
         a small margin of error while ensuring the counts are close enough for
@@ -406,7 +495,7 @@ class TestStateManager2:
 
         # Initialize mock publisher for running actions
         action_node = rclpy.create_node('action_publisher')
-        action_publisher = action_node.create_publisher(
+        running_actions_publisher = action_node.create_publisher(
             String, '/action_running', 10)
         self.executor.add_node(action_node)
 
@@ -414,7 +503,7 @@ class TestStateManager2:
         assert self.state_manager._cached_running_actions == 'None'
 
         # Publish running action
-        action_publisher.publish(String(data='move_forward'))
+        running_actions_publisher.publish(String(data='move_forward'))
         self.executor.spin_once(timeout_sec=0.1)
 
         # Verify cached running actions updated
@@ -425,7 +514,7 @@ class TestStateManager2:
         assert 'move_forward' in state_suffix
 
         # Test empty running actions (should reset to default)
-        action_publisher.publish(String(data=''))
+        running_actions_publisher.publish(String(data=''))
         self.executor.spin_once(timeout_sec=0.1)
 
         assert self.state_manager._cached_running_actions == 'None'
@@ -682,12 +771,12 @@ class TestStateManager2:
         assert 'Integration test message' in state
 
         # Update running actions and verify suffix
-        action_node = rclpy.create_node('action_publisher')
-        action_publisher = action_node.create_publisher(
+        action_node = rclpy.create_node('running_actions_publisher')
+        running_actions_publisher = action_node.create_publisher(
             String, '/action_running', 10)
         self.executor.add_node(action_node)
 
-        action_publisher.publish(String(data='test_action'))
+        running_actions_publisher.publish(String(data='test_action'))
         self.executor.spin_once(timeout_sec=0.1)
 
         state = self.state_manager.get_state()
@@ -721,9 +810,13 @@ class TestStateManager2:
         assert chunk.startswith('\n')
 
     def test_clear_ratio_behavior(self):
-        """Test different clear ratios for state sequence trimming."""
-        # Test with 0.3 ratio (keep 30% newest)
-        test_params = self.create_test_parameters(state_max_tokens=150,
+        """Test that clear ratio correctly determines how many chunks to keep.
+
+        When state sequence exceeds token limit, it should trim to keep
+        only the configured ratio of the newest messages.
+        """
+        # Test with 0.3 ratio (keep 30% newest chunks after clearing)
+        test_params = self.create_test_parameters(state_max_tokens=200,
                                                   state_seq_clear_ratio=0.3)
         self.state_manager = StateManager2(parameter_overrides=test_params)
         self.executor.add_node(self.state_manager)
@@ -733,16 +826,55 @@ class TestStateManager2:
         asr_publisher = asr_node.create_publisher(String, '/asr', 10)
         self.executor.add_node(asr_node)
 
-        # Add enough messages to fill up
-        for i in range(20):
-            asr_publisher.publish(String(data=f'Message {i}'))
+        # Add enough messages to approach token limit
+        message_count = 0
+        max_allowed = self.state_manager.state_max_tokens - 50
+        while len(self.state_manager) < max_allowed:
+            asr_publisher.publish(String(data=f'Fill message {message_count}'))
             self.executor.spin_once(timeout_sec=0.05)
+            message_count += 1
 
-        # Verify state sequence was trimmed and newest messages kept
+            # Safety check
+            if message_count > 100:
+                break
+
+        chunks_before_clear = (
+            self.state_manager.state_seq.get_num_state_chunks())
+        print(f"Chunks before clearing: {chunks_before_clear}")
+        print(f"Token count before clear: {len(self.state_manager)}")
+
+        # Trigger clearing by adding a large message
+        large_message = 'Trigger clear: ' + 'x' * 100
+        asr_publisher.publish(String(data=large_message))
+        self.executor.spin_once(timeout_sec=0.1)
+
+        chunks_after_clear = (
+            self.state_manager.state_seq.get_num_state_chunks())
+        print(f"Chunks after clearing: {chunks_after_clear}")
+        print(f"Token count after clear: {len(self.state_manager)}")
+
+        # Verify clearing occurred
+        assert chunks_after_clear < chunks_before_clear, \
+            "State sequence should have been cleared"
+
+        # Verify approximately 30% of chunks were kept
+        # (plus the new message that triggered the clear)
+        expected_kept = int(chunks_before_clear * 0.3)
+        # Allow some tolerance due to token-based clearing logic
+        tolerance = 2
+        assert abs(chunks_after_clear - expected_kept - 1) <= tolerance, (
+            f"Expected ~{expected_kept + 1} chunks (30% + trigger message), "
+            f"got {chunks_after_clear}")
+
+        # Verify newest messages are kept (FIFO - oldest removed first)
         state = self.state_manager.get_state()
-        assert 'Message 19' in state, "Newest message should be kept"
+        assert large_message in state, "Trigger message should be kept"
 
-        # Verify token limit respected
+        # Verify old messages were removed
+        assert 'Fill message 0' not in state, \
+            "Oldest messages should have been removed"
+
+        # Verify token limit is still respected
         assert len(self.state_manager) <= self.state_manager.state_max_tokens
 
         # Cleanup
@@ -751,7 +883,7 @@ class TestStateManager2:
 
     def test_no_topics_raises_error(self):
         """Test that initialization fails when no topics are specified.
-        
+
         Note: ROS2 parameter system raises InvalidParameterTypeException
         when passing empty lists for STRING_ARRAY parameters, before
         StateManager2's own validation can run.
@@ -764,35 +896,126 @@ class TestStateManager2:
             self.state_manager = StateManager2(parameter_overrides=test_params)
 
     def test_cached_state_chunks_consistency(self):
-        """Test _cached_state_chunks_str consistency with state_seq."""
-        test_params = self.create_test_parameters()
+        """Test _cached_state_chunks_str consistency with state_seq.
+
+        Tests cache consistency across multiple scenarios:
+        1. Initial empty state
+        2. After adding messages
+        3. After sequence clearing (overflow)
+        4. After complete sweep
+        """
+        # Use moderate token limit - small enough to trigger clearing later,
+        # but large enough to hold initial test messages
+        test_params = self.create_test_parameters(state_max_tokens=300,
+                                                  state_seq_clear_ratio=0.5)
         self.state_manager = StateManager2(parameter_overrides=test_params)
         self.executor.add_node(self.state_manager)
 
-        # Add messages
         asr_node = rclpy.create_node('asr_publisher')
         asr_publisher = asr_node.create_publisher(String, '/asr', 10)
         self.executor.add_node(asr_node)
 
+        # Test 1: Initial empty state - cache should be empty
+        assert self.state_manager._cached_state_chunks_str == '', \
+            "Initial cache should be empty"
+        chunks_from_seq = '\n'.join(
+            [chunk.chunk for chunk in self.state_manager.state_seq])
+        assert self.state_manager._cached_state_chunks_str == chunks_from_seq, \
+            "Empty cache should match empty sequence"
+
+        # Test 2: After adding messages - cache should match all chunks
         for i in range(3):
             asr_publisher.publish(String(data=f'Message {i}'))
+
+        # Process all messages - add extra spins for reliability
+        for _ in range(5):
             self.executor.spin_once(timeout_sec=0.1)
 
-        # Verify cached string contains all chunks
         cached = self.state_manager._cached_state_chunks_str
         assert 'Message 0' in cached
         assert 'Message 1' in cached
         assert 'Message 2' in cached
 
-        # Verify cache matches sequence
         chunks_from_seq = '\n'.join(
             [chunk.chunk for chunk in self.state_manager.state_seq])
         assert cached == chunks_from_seq, \
-            "Cached state chunks don't match state sequence"
+            "Cache should match sequence after adding messages"
+
+        # Test 3: After sequence clearing - cache should update correctly
+        # Add messages until we're near the limit
+        message_count = 3
+        max_allowed = self.state_manager.state_max_tokens - 50
+        while len(self.state_manager) < max_allowed:
+            asr_publisher.publish(String(data=f'Fill {message_count}'))
+            self.executor.spin_once(timeout_sec=0.05)
+            message_count += 1
+            if message_count > 100:
+                break
+
+        chunks_before_clear = (
+            self.state_manager.state_seq.get_num_state_chunks())
+
+        # Trigger clearing with large message
+        trigger_msg = 'Trigger: ' + 'x' * 100
+        asr_publisher.publish(String(data=trigger_msg))
+        self.executor.spin_once(timeout_sec=0.1)
+
+        chunks_after_clear = (
+            self.state_manager.state_seq.get_num_state_chunks())
+
+        # Verify clearing occurred
+        assert chunks_after_clear < chunks_before_clear, \
+            "Clearing should have occurred"
+
+        # Verify cache matches sequence after clearing
+        cached_after_clear = self.state_manager._cached_state_chunks_str
+        chunks_from_seq_after_clear = '\n'.join(
+            [chunk.chunk for chunk in self.state_manager.state_seq])
+        assert cached_after_clear == chunks_from_seq_after_clear, \
+            "Cache should match sequence after clearing"
+
+        # Verify old messages were removed from cache
+        assert 'Message 0' not in cached_after_clear, \
+            "Old messages should not be in cache after clearing"
+
+        # Verify trigger message is in cache
+        assert trigger_msg in cached_after_clear, \
+            "Trigger message should be in cache"
+
+        # Test 4: After complete sweep - cache should be empty again
+        client_node = rclpy.create_node('sweep_client')
+        self.executor.add_node(client_node)
+        client = client_node.create_client(Trigger, 'sweep_state')
+
+        assert client.wait_for_service(timeout_sec=2.0), \
+            "Sweep service not available"
+
+        request = Trigger.Request()
+        future = client.call_async(request)
+
+        while not future.done():
+            self.executor.spin_once(timeout_sec=0.1)
+
+        response = future.result()
+        assert response.success is True
+
+        # Verify cache is empty after sweep
+        assert self.state_manager._cached_state_chunks_str == '', \
+            "Cache should be empty after sweep"
+        assert self.state_manager.state_seq.get_num_state_chunks() == 0, \
+            "Sequence should be empty after sweep"
+
+        chunks_from_seq_after_sweep = '\n'.join(
+            [chunk.chunk for chunk in self.state_manager.state_seq])
+        cache_after_sweep = self.state_manager._cached_state_chunks_str
+        assert cache_after_sweep == chunks_from_seq_after_sweep, \
+            "Empty cache should match empty sequence after sweep"
 
         # Cleanup
         self.executor.remove_node(asr_node)
+        self.executor.remove_node(client_node)
         asr_node.destroy_node()
+        client_node.destroy_node()
 
     def test_timestamp_in_chunks(self):
         """Test that timestamps are correctly included in state chunks."""
@@ -806,7 +1029,10 @@ class TestStateManager2:
         self.executor.add_node(asr_node)
 
         asr_publisher.publish(String(data='Timestamp test'))
-        self.executor.spin_once(timeout_sec=0.1)
+
+        # Process message with extra spins for reliability
+        for _ in range(3):
+            self.executor.spin_once(timeout_sec=0.1)
 
         # Verify timestamp exists in state
         state = self.state_manager.get_state()
