@@ -25,70 +25,86 @@ TOPIC_AND_ACTION_DESCRIPTION = 'Topic and action description'
 
 
 class StateManager2(Node):
+    """ROS2 node managing robot state with an appended state chunk sequence.
+
+    This node maintains a dynamic state representation by aggregating
+    messages from subscribed topics into a token-limited sequence of state
+    chunks. The appended state is structured as
+            [static prefix] + [appended chunks] + [dynamic suffix]
+        and is published to a configurable state topic.
+
+    Usage:
+        Configure via ROS2 parameters and launch. Subscribe topics to
+        event_topics, continuous_topics, or thought_topics to build
+        state chunks. Access current state via the published state
+        topic or get_state() method.
+
+        Example configuration:
+            state_max_tokens: 70000
+            state_seq_clear_ratio: 0.5  # Clear 50% when overflow
+            event_topics: ['/asr', '/commands']
+            continuous_topics: ['/vision', '/sensors']
+            thought_topics: ['/agency']
+            action_running_topic: '/action_running'
+            robot_state_info_topic: '/robot_state_info'
+
+    State Chunk Processing Flow:
+        1. Subscribed topic publishes a message
+        2. Callback processes message (event/continuous/thought)
+        3. Message formatted into StateChunk with timestamp and token count
+        4. If total tokens would exceed max, clear oldest chunks by ratio
+        5. New chunk appended to sequence and cached string updated
+        6. Updated state published to state topic
+
+    Core Variables:
+        state_prefix: Static prefix with robot description, personality
+        state_seq: StateChunkSequence managing the chunk queue
+        state_suffix: Dynamic suffix with current robot system information
+        _cached_state_chunks_str: Performance-optimized chunk string cache
+        _cached_running_actions: Current running actions (from subscription)
+        _cached_robot_state_info: Robot state info (from subscription)
+
+    Token Counting:
+        - state_prefix_num_tokens: Static, cached at initialization
+        - state_chunks_num_tokens: Sum from StateChunkSequence
+        - state_suffix_num_tokens: Recomputed on each access
+        Total via get_state_token_len() or len(state_manager)
+
+        NOTE: state_chunks_num_tokens is approximate and does not contain
+            state template tokens!
+
+    Key Methods:
+        - get_state() -> str: Get complete current state
+        - get_state_token_len() -> int: Get total token count
+        - sweep_state service: Clear all state chunks via ROS2 service
+
+    Properties:
+        - state_chunks: Formatted state chunks with template wrapper
+        - state_suffix: Dynamic suffix with running actions & robot info
+        - state_chunks_num_tokens: Token count of chunk sequence (without state
+            template tokens)
+        - state_suffix_num_tokens: Token count of dynamic suffix
+
+    Thread Safety:
+        All state modifications protected by self.lock. Safe for concurrent
+        topic callbacks and state access from multiple threads.
+
+    Performance Notes:
+        - Token counts are approximations (~13 token template overhead)
+        - Acceptable error: <0.02% at typical state sizes (70k tokens)
+        - Cached strings updated incrementally for O(1) append performance
     """
 
-    Maintained core variables:
-        
-        # State strings
-        state_prefix - Static prefix containing robot description, personality, etc.
-        state_chunks (property) - Formatted state chunks using template
-        state_suffix (property) - Dynamic suffix with running actions and robot info
-
-        # Token counts
-        state_prefix_num_tokens: Token count of the static prefix (cached)
-        state_chunks_num_tokens (property): Token count from state_seq
-        state_suffix_num_tokens (property): Token count of the dynamic suffix (recomputed each access)
-
-        state_seq: StateChunkSequence object managing the queue of state chunks
-            _cached_state_chunks_str: Cached string representation of all state chunks (for performance)
-        _cached_running_actions: Cached current running actions string
-        _cached_robot_state_info: Cached robot state information string
-
-    Core methods
-        get_state()
-        get_state_token_len() or len(state_manager_2)
-        _publish_state()
-        
-
-    State chunk processing flow:
-        1. A subscribed topic publishes a msg
-
-        2. A callback function processes the msg
-            event_msg_callback()
-            _process_message()
-
-        3. The msg is formatted into a StateChunk and appended to sequence
-            - Sequence is cleared if its length will be over max token length
-        
-        4. The updated state is published
-            get_state()
-            state_pub.publish()
-
-    State Structure:
-
-        [Static prefix]
-        - Token count: Stored in StateManager2
-        >>> self.state_prefix
-        >>> self.state_prefix_num_tokens
-
-        [Appended state chunk sequence]
-        - Token count: Managed by StateChunkSequence
-        >>> self.state_chunks
-                _cached_state_chunks_str
-                template(_cached_state_chunks_str)
-        >>> self.state_chunks_num_tokens
-
-        [Dynamic suffix]
-        - Token count: Recomputed by StateManager2
-        >>> self.state_suffix
-        >>> self.state_suffix_num_tokens
-    
-    NOTE: The considered state token sequence lengths are not considered exact!
-        The provided values are close enough for determining state sequence
-        clearing while providing high performance.
-    """  # noqa
-
     def __init__(self, **kwargs):
+        """Initialize StateManager2 node with parameters and subscriptions.
+
+        Sets up tokenizer, state sequences, subscriptions to configured
+        topics, and optional features (long-term memory file, state file,
+        sweep service). Publishes initial state with prefix and suffix.
+
+        Raises:
+            IOError: If no topics are specified in parameters.
+        """
         super().__init__('state_manager_2', **kwargs)
 
         # Parameters
@@ -276,26 +292,35 @@ class StateManager2(Node):
 
     @property
     def state_chunks(self) -> str:
-        """Returns a formatted state chunks string."""
+        """Return formatted state chunks with template wrapper applied.
+        
+        Returns:
+            str: Template-wrapped concatenation of cached state chunks.
+        """
         return appended_state_chunks_pt(self._cached_state_chunks_str)
 
     @property
     def state_chunks_num_tokens(self) -> int:
-        """Returns the token count from the state chunk sequence.
+        """Return token count from state chunk sequence.
 
-        Note: This returns the sum of individual chunk token counts, which does
-        not include the template wrapper tokens (~13 tokens). This approximation
-        is acceptable since the token count is used for soft limits and the
-        error is negligible (<0.02% at typical state sizes).
+        Returns sum of individual chunk token counts, excluding template
+        wrapper tokens (~13 tokens). This approximation is acceptable for
+        soft limits with negligible error (<0.02% at 70k token sizes).
+
+        Returns:
+            int: Sum of all chunk token counts in sequence.
         """
         return len(self.state_seq)
 
     @property
     def state_suffix(self):
-        """Generate a state suffix using cached and real-time information.
+        """Generate dynamic state suffix from cached variables.
 
-        Note: Cached variables may be updated concurrently by callbacks.
-        Brief inconsistency is acceptable for this use case.
+        Uses cached running actions and robot state info, which may be
+        updated concurrently by callbacks. Brief inconsistency is acceptable.
+
+        Returns:
+            str: Template formatted dynamic suffix with current system state.
         """
         return dynamic_state_suffix_pt(
             self._cached_running_actions,
@@ -304,10 +329,13 @@ class StateManager2(Node):
 
     @property
     def state_suffix_num_tokens(self):
-        """Counts number of tokens in the current state suffix.
+        """Count tokens in current dynamic state suffix.
 
-        NOTE: The state suffix is presumed very small and dynamic. Recounting
-            the number of tokens every time is sensible.
+        Recomputes on each access since suffix is small and changes
+        frequently. More efficient than caching for this use case.
+
+        Returns:
+            int: Number of tokens in current state suffix.
         """
         return self.get_token_len(self.state_suffix)
 
@@ -316,7 +344,12 @@ class StateManager2(Node):
     ####################
 
     def _create_subscribers(self) -> list:
-        """Create subscribers for state chunk topics."""
+        """Create subscribers for all configured topic types.
+
+        Returns:
+            list: ROS2 subscription objects for event, continuous, and
+                thought topics.
+        """
         subscribers = []
 
         for topic in self.event_topics:
@@ -395,13 +428,17 @@ class StateManager2(Node):
         msg: String,
         topic: str,
     ):
-        """Common message processing logic for all state chunk types.
+        """Process incoming message into state chunk and publish update.
 
-        Thread-safe: Uses lock to protect shared state during modifications.
+        Creates timestamped state chunk, manages token overflow by clearing
+        old chunks if needed, appends to sequence, writes to long-term
+        memory (if configured), and publishes updated state.
+
+        Thread-safe: Uses lock to protect shared state.
 
         Args:
-            msg: ROS message
-            topic: Topic name
+            msg: ROS String message containing data
+            topic: Topic name from which message was received
         """
         # Get timestamp
         msg_ts = self.get_clock().now().to_msg()
@@ -446,7 +483,7 @@ class StateManager2(Node):
         self._publish_state()
 
     def _publish_state(self):
-        """Publish the current state."""
+        """Publish current state and optionally write to state file."""
         msg = String()
         state = self.get_state()
         msg.data = state
@@ -461,14 +498,14 @@ class StateManager2(Node):
                 self.get_logger().error(f'Failed to write state to file: {e}')
 
     def get_state(self) -> str:
-        """Return current state as a string with appended state chunks.
+        """Get complete state representation.
 
-        Note: Reads cached variables that may be updated concurrently.
-        Brief inconsistency between components is acceptable.
+        Concatenates static prefix, formatted state chunks (via template),
+        and dynamic suffix. Reads cached variables that may update
+        concurrently; brief inconsistency is acceptable.
 
         Returns:
-            str: Complete state representation including prefix, chunks,
-            and suffix.
+            str: Full state string (prefix + chunks + suffix).
         """
         state = self.state_prefix + self.state_chunks + self.state_suffix
         return state
@@ -478,9 +515,12 @@ class StateManager2(Node):
     ##############################
 
     def _action_running_sub_callback(self, msg: String):
-        """Stores the latest running actions msg and publish updated state.
+        """Update running actions and republish state.
 
-        Thread-safe: Updates cached running actions under lock protection.
+        Thread-safe: Updates under lock protection.
+
+        Args:
+            msg: String message containing current running actions.
         """
         running_actions = msg.data.strip()
 
@@ -493,9 +533,12 @@ class StateManager2(Node):
         self._publish_state()
 
     def _robot_state_info_callback(self, msg: String):
-        """Stores the latest robot state info msg.
+        """Update robot state info and republish state.
 
-        Thread-safe: Updates cached robot state info under lock protection.
+        Thread-safe: Updates under lock protection.
+
+        Args:
+            msg: String message containing robot state information.
         """
         with self.lock:
             self._cached_robot_state_info = msg.data
@@ -503,7 +546,17 @@ class StateManager2(Node):
         self._publish_state()
 
     def _sweep_state_callback(self, request, response):
-        """Sweep (clear) all state chunks from state sequence."""
+        """Service callback to clear all state chunks.
+
+        Thread-safe: Uses lock to protect state modifications.
+
+        Args:
+            request: Trigger service request (unused).
+            response: Trigger service response to populate.
+
+        Returns:
+            Trigger.Response: Success status and message with chunk count.
+        """
         # Thread-safe: Use lock to protect state modifications
         with self.lock:
             # Count chunks before clearing for logging
@@ -534,18 +587,22 @@ class StateManager2(Node):
 
     @staticmethod
     def format_state_chunk(topic: str, ts_str: str, data: str) -> str:
-        """Format a state chunk as a string.
+        """Format message into standardized state chunk string.
 
         Args:
-            topic: Name of ROS 2 topic publishing message
-            ts_str: Timestamp of message formatted as
-                'year-month-day hour:minute:second'
+            topic: ROS2 topic name
+            ts_str: Timestamp as 'YYYY-MM-DD HH:MM:SS'
             data: Message content
+
+        Returns:
+            str: Formatted chunk with topic, timestamp, data, and delimiter.
         """
         return f'\ntopic: {topic}\nts: {ts_str}\ndata: {data}\n---'
 
     def __len__(self):
-        """Return the total token count of the current state.
+        """Return total token count of current state.
+
+        Usage: len(state_manager) returns token count.
 
         Returns:
             int: Sum of prefix, chunks, and suffix token counts.
@@ -553,7 +610,12 @@ class StateManager2(Node):
         return self.get_state_token_len()
 
     def get_state_token_len(self):
-        """Return the token sequence length of the current state."""
+        """Calculate total token count of current state.
+
+        Returns:
+            int: Sum of state_prefix_num_tokens, state_chunks_num_tokens,
+                and state_suffix_num_tokens.
+        """
         num_tokens = (self.state_prefix_num_tokens +
                       self.state_chunks_num_tokens +
                       self.state_suffix_num_tokens)
@@ -561,7 +623,14 @@ class StateManager2(Node):
         return num_tokens
 
     def get_token_len(self, s: str) -> int:
-        """Return the number of tokens representing a string."""
+        """Count tokens in string using configured tokenizer.
+
+        Args:
+            s: String to tokenize
+
+        Returns:
+            int: Number of tokens in string.
+        """
         return len(self.tokenizer(s)['input_ids'])
 
 
