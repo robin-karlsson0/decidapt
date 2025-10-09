@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch>
+    <arg name="state_topic_name" default="/state"/>
+    <arg name="llm_model_name" default="Qwen/Qwen3-30B-A3B-Instruct-2507"/>
+    <arg name="state_max_tokens" default="70000"/>
+    <arg name="state_seq_clear_ratio" default="0.5"/>
+    <arg name="event_topics" default="['/asr', '/user_commands', '/navigation_goals']"/>
+    <arg name="continuous_topics" default="['/vision', '/sensors', '/pose']"/>
+    <arg name="thought_topics" default="['/agency', '/plan']"/>
+    <arg name="action_running_topic" default="/action_running"/>
+    <arg name="robot_state_info_topic" default="/robot_state_info"/>
+    <arg name="long_term_memory_file_pth" default=""/>
+    <arg name="state_file_pth" default=""/>
+    <arg name="enable_sweep_service" default="true"/>
+
+    <node pkg="state_manager" exec="state_manager_2" name="state_manager_2" output="screen" emulate_tty="true">
+        <param name="state_topic_name" value="$(var state_topic_name)"/>
+        <param name="llm_model_name" value="$(var llm_model_name)"/>
+        <param name="state_max_tokens" value="$(var state_max_tokens)"/>
+        <param name="state_seq_clear_ratio" value="$(var state_seq_clear_ratio)"/>
+        <param name="event_topics" value="$(var event_topics)"/>
+        <param name="continuous_topics" value="$(var continuous_topics)"/>
+        <param name="thought_topics" value="$(var thought_topics)"/>
+        <param name="action_running_topic" value="$(var action_running_topic)"/>
+        <param name="robot_state_info_topic" value="$(var robot_state_info_topic)"/>
+        <param name="long_term_memory_file_pth" value="$(var long_term_memory_file_pth)"/>
+        <param name="state_file_pth" value="$(var state_file_pth)"/>
+        <param name="enable_sweep_service" value="$(var enable_sweep_service)"/>
+    </node>
+</launch>
