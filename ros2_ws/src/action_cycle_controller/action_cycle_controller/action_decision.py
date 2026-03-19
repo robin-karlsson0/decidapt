@@ -324,7 +324,12 @@ class ActionDecisionActionServer(Node):
             stream=False,
             max_tokens=self.max_tokens,
             temperature=self.llm_temp,
-            seed=self.llm_seed)
+            seed=self.llm_seed,
+            extra_body={
+                "chat_template_kwargs": {
+                    "enable_thinking": False,  # Used by Qwen3 templates
+                }
+            })
         pred_action = output.choices[0].message.content
         tokens = int(output.usage.total_tokens)
 
