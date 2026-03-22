@@ -108,6 +108,9 @@ class ActionDecisionActionServer2(Node):
         self.declare_parameter('action_decision_topic', '/action_decision')
         self.declare_parameter('log_pred_io_pth', '')
 
+        # Manual mode params
+        self.declare_parameter('manual_mode', False)
+
         # LLM inference params
         self.declare_parameter('inference_server_type', 'vllm')
         self.declare_parameter('inference_server_url', 'http://localhost:8000')
@@ -121,6 +124,7 @@ class ActionDecisionActionServer2(Node):
         self.action_decision_topic = self.get_parameter(
             'action_decision_topic').value
         self.log_pred_io_pth = self.get_parameter('log_pred_io_pth').value
+        self.manual_mode = self.get_parameter('manual_mode').value
         self.inference_server_type = self.get_parameter(
             'inference_server_type').value
         self.inference_server_url = self.get_parameter(
@@ -136,6 +140,7 @@ class ActionDecisionActionServer2(Node):
             f'  action_server_name: {self.action_server_name}\n'
             f'  action_decision_topic: {self.action_decision_topic}\n'
             f'  log_pred_io_pth: {self.log_pred_io_pth}\n'
+            f'  manual_mode: {self.manual_mode}\n'
             f'  inference_server_type: {self.inference_server_type}\n'
             f'  Inference server url: {self.inference_server_url}\n'
             f'  max_tokens: {self.max_tokens}\n'
@@ -144,13 +149,19 @@ class ActionDecisionActionServer2(Node):
             f'  max_retries: {self.max_retries}\n')
 
         # Configure inference server type and corresponding client/callback
-        if self.inference_server_type.lower() == 'vllm':
+        if self.manual_mode:
+            self.execute_callback = self.execute_callback_manual
+            self._setup_manual_mode()
+            self.get_logger().info(
+                "Manual mode enabled - waiting for file input at 'manual_action.txt'"  # noqa
+            )
+        elif self.inference_server_type.lower() == 'vllm':
             self._setup_vllm_client()
             self.execute_callback = self.execute_callback_vllm
         else:
             raise ValueError(f"Unsupported inference_server_type: "
                              f"{self.inference_server_type}. "
-                             f"Supported types: 'vllm'")
+                             f"Supported types: 'vllm', 'manual'")
 
         self._action_server = ActionServer(
             self,
@@ -176,6 +187,19 @@ class ActionDecisionActionServer2(Node):
             if not os.path.exists(self.log_pred_io_pth):
                 os.makedirs(self.log_pred_io_pth)
 
+    def _setup_manual_mode(self):
+        """Setup manual mode by creating action file init with idle action."""
+        try:
+            # Create manual action file with default idle action 'a'
+            with open('manual_action.txt', 'w') as f:
+                f.write('')
+            self.get_logger().info(
+                "Created manual action file: 'manual_action.txt'")
+        except Exception as e:
+            self.get_logger().error(
+                f"Failed to create manual action file: {e}")
+            raise
+
     def _setup_vllm_client(self):
         """Setup OpenAI-compatible client for vLLM server."""
         try:
@@ -191,6 +215,90 @@ class ActionDecisionActionServer2(Node):
         self._vllm_model = self.client.models.list().data[0].id
         self.get_logger().info(
             f"Configured vLLM client for: {self.inference_server_url}/v1")
+
+    async def execute_callback_manual(self, goal_handle):
+        """Execute action decision using file-based manual input.
+
+        This callback function processes ActionDecision goals by reading the
+        current action from the manual action file, then resetting the file
+        to the default idle action 'a' for the next cycle.
+
+        Args:
+            goal_handle: ROS 2 action goal handle containing the ActionDecision
+                        request with state and valid_actions fields
+
+        Returns:
+            ActionDecision.Result: Result message containing the manually
+                                  selected action as a single character string
+
+        Process Flow:
+            1. Extract state and valid actions from goal request
+            2. Log current state and available actions for user reference
+            3. Read action from manual_action.txt file
+            4. Reset file to 'a' for next cycle
+            5. Return result with the action
+
+        File Interface:
+            The file always contains a single character action. User can modify
+            the file to change the action. After each read, the file is reset
+            to 'a' (idle action) automatically.
+        """
+        # Unpack ActionDecision.Goal() msg
+        goal = goal_handle.request
+        state = goal.state
+        valid_actions = goal.valid_actions
+
+        t0 = time.time()
+
+        self.get_logger().info("Reading action from file: 'manual_action.txt'")
+
+        # Read action from file
+        pred_action = self.do_nothing_action  # default fallback
+
+        try:
+            if os.path.exists('manual_action.txt'):
+                with open('manual_action.txt', 'r') as f:
+                    content = f.read().strip()
+
+                if content:  # File has content
+                    # Take only the first character
+                    pred_action = content[0].lower()
+                    self.get_logger().info(
+                        f"Read action from file: '{pred_action}'")
+
+                    # Reset file for next cycle
+                    with open('manual_action.txt', 'w') as f:
+                        f.write('')
+                else:
+                    self.get_logger().info(
+                        f"File was empty, using default: '{pred_action}'")
+
+            else:
+                self.get_logger().error(
+                    f"Manual action file not found, using default: '{pred_action}'"  # noqa
+                )
+
+        except Exception as e:
+            self.get_logger().error(
+                f"Error reading manual action file: {e}, using default: '{pred_action}'"  # noqa
+            )
+
+        result = ActionDecision.Result()
+        result.pred_action = pred_action
+
+        t1 = time.time()
+        dt = t1 - t0
+
+        goal_handle.succeed()
+        self.get_logger().info(
+            f"Manual decision: '{result.pred_action}' ({dt:.2f} s)")
+
+        # Write prediction IO example to file (for consistency with LLM mode)
+        if self.log_pred_io_pth:
+            manual_input = f"MANUAL FILE INPUT\nState: {state}\nValid Actions: {valid_actions}"  # noqa
+            await self.log_pred_io(manual_input, pred_action, dt)
+
+        return result
 
     async def execute_callback_vllm(self, goal_handle):
         """Execute action decision prediction using vLLM server.

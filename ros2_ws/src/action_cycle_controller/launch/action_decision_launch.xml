@@ -9,6 +9,7 @@
     <arg name="llm_temp" default="0.0" description="Temperature for LLM next-token output distribution"/>
     <arg name="llm_seed" default="14" description="Seed for reproducible LLM results"/>
     <arg name="max_retries" default="3" description="Maximum number of retries for LLM inference in case of failure"/>
+    <arg name="manual_mode" default="false" description="If true, the action decision node will not call the LLM and will instead wait for user input on the action_decision_topic"/>
 
     <node pkg="action_cycle_controller" exec="action_decision" name="action_decision" output="screen" emulate_tty="true">
         <param name="action_server_name" value="$(var action_server_name)"/>
@@ -20,5 +21,6 @@
         <param name="llm_temp" value="$(var llm_temp)"/>
         <param name="llm_seed" value="$(var llm_seed)"/>
         <param name="max_retries" value="$(var max_retries)"/>
+        <param name="manual_mode" value="$(var manual_mode)"/>
     </node>
 </launch>
