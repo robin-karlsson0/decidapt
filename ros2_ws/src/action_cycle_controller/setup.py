@@ -7,7 +7,7 @@ package_name = 'action_cycle_controller'
 
 setup(
     name=package_name,
-    version='0.0.3',
+    version='0.1.0',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages',
@@ -34,6 +34,7 @@ setup(
             'action_cycle_controller = ' + package_name +
             '.action_cycle_controller:main',
             'action_decision = ' + package_name + '.action_decision:main',
+            'action_decision_2 = ' + package_name + '.action_decision_2:main',
         ],
     },
 )
