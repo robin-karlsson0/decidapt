@@ -188,6 +188,7 @@ class StateManager2(Node):
             AGENCY_DESCRIPTION,
             TOPIC_AND_ACTION_DESCRIPTION,
         )
+        self.state_prefix_len = len(self.state_prefix)
         self.state_prefix_num_tokens = self.get_token_len(self.state_prefix)
 
         # Appended state chunks managed by state chunk sequence and templated
@@ -518,7 +519,7 @@ class StateManager2(Node):
             "dyn": self.state_suffix,
             "metadata": {
                 "seq_version": self.seq_version,
-                "chunk_char_length": len(state_chunks)
+                "static_char_len": self.state_prefix_len + len(state_chunks)
             }
         }
         return json.dumps(state_dict)
