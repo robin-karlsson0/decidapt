@@ -1,3 +1,4 @@
+import json
 import threading
 from datetime import datetime
 
@@ -197,6 +198,8 @@ class StateManager2(Node):
         self._cached_running_actions = ''
         self._cached_robot_state_info = ''
 
+        self.seq_version = 0
+
         self.lock = threading.Lock()
 
         ######################
@@ -293,7 +296,7 @@ class StateManager2(Node):
     @property
     def state_chunks(self) -> str:
         """Return formatted state chunks with template wrapper applied.
-        
+
         Returns:
             str: Template-wrapped concatenation of cached state chunks.
         """
@@ -455,6 +458,7 @@ class StateManager2(Node):
             total_with_new = self.get_state_token_len() + new_num_tokens
             if total_with_new >= self.state_max_tokens:
                 self.state_seq.clear(self.state_seq_clear_ratio)
+                self.seq_version += 1
                 # Regenerate cached string from remaining chunks
                 state_chunks = [
                     state_chunk.chunk for state_chunk in self.state_seq
@@ -500,15 +504,24 @@ class StateManager2(Node):
     def get_state(self) -> str:
         """Get complete state representation.
 
-        Concatenates static prefix, formatted state chunks (via template),
-        and dynamic suffix. Reads cached variables that may update
-        concurrently; brief inconsistency is acceptable.
+        Returns JSON string with static prefix, formatted state chunks,
+        dynamic suffix, and tracking metadata. Reads cached variables
+        that may update concurrently; brief inconsistency is acceptable.
 
         Returns:
-            str: Full state string (prefix + chunks + suffix).
+            str: JSON string containing the state and metadata.
         """
-        state = self.state_prefix + self.state_chunks + self.state_suffix
-        return state
+        state_chunks = self.state_chunks
+        state_dict = {
+            "pre": self.state_prefix,
+            "chunks": state_chunks,
+            "dyn": self.state_suffix,
+            "metadata": {
+                "seq_version": self.seq_version,
+                "chunk_char_length": len(state_chunks)
+            }
+        }
+        return json.dumps(state_dict)
 
     ##############################
     #  Supporting functionality
@@ -564,6 +577,7 @@ class StateManager2(Node):
 
             # Clear state sequence (0% = clear all)
             self.state_seq.clear(0.0)
+            self.seq_version += 1
 
             # Clear cached state chunks string
             self._cached_state_chunks_str = ''
@@ -616,9 +630,9 @@ class StateManager2(Node):
             int: Sum of state_prefix_num_tokens, state_chunks_num_tokens,
                 and state_suffix_num_tokens.
         """
-        num_tokens = (self.state_prefix_num_tokens +
-                      self.state_chunks_num_tokens +
-                      self.state_suffix_num_tokens)
+        num_tokens = (self.state_prefix_num_tokens
+                      + self.state_chunks_num_tokens
+                      + self.state_suffix_num_tokens)
 
         return num_tokens
 
