@@ -200,7 +200,8 @@ class StateManager2(Node):
         self._cached_robot_state_info = ''
 
         self.state_idx = 0
-        self.seq_version = 0
+        self.state_seq_ver = 0
+        self.evicted_static_len = 0
 
         self.lock = threading.Lock()
 
@@ -460,7 +461,7 @@ class StateManager2(Node):
             total_with_new = self.get_state_token_len() + new_num_tokens
             if total_with_new >= self.state_max_tokens:
                 self.state_seq.clear(self.state_seq_clear_ratio)
-                self.seq_version += 1
+                self.state_seq_ver += 1
                 # Regenerate cached string from remaining chunks
                 state_chunks = [
                     state_chunk.chunk for state_chunk in self.state_seq
@@ -475,6 +476,14 @@ class StateManager2(Node):
                 self._cached_state_chunks_str += '\n' + new_chunk
             else:
                 self._cached_state_chunks_str = new_chunk
+
+            if total_with_new >= self.state_max_tokens:
+                # Capture evicted static length: prefix + all chunks including
+                # the newly appended one (i.e. the first state published after
+                # eviction)
+                self.evicted_static_len = len(self.state_prefix) + \
+                    len(self._cached_state_chunks_str)
+
 
         # Write to long-term memory
         if self.long_term_memory_file_pth:
@@ -524,8 +533,9 @@ class StateManager2(Node):
             "dyn": self.state_suffix,
             "metadata": {
                 "state_idx": self.state_idx,
-                "seq_version": self.seq_version,
-                "static_char_len": self.state_prefix_len + len(state_chunks)
+                "state_seq_ver": self.state_seq_ver,
+                "static_char_len": self.state_prefix_len + len(state_chunks),
+                "evicted_char_length": self.evicted_static_len
             }
         }
         return json.dumps(state_dict)
@@ -584,13 +594,14 @@ class StateManager2(Node):
 
             # Clear state sequence (0% = clear all)
             self.state_seq.clear(0.0)
-            self.seq_version += 1
+            self.state_seq_ver += 1
 
             # Clear cached state chunks string
             self._cached_state_chunks_str = ''
 
         # Publish updated (empty) state
         self._publish_state()
+        self.state_idx += 1
 
         # Prepare response
         response.success = True
