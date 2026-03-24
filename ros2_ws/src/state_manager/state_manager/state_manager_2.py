@@ -467,6 +467,9 @@ class StateManager2(Node):
                     state_chunk.chunk for state_chunk in self.state_seq
                 ]
                 self._cached_state_chunks_str = '\n'.join(state_chunks)
+                # Capture evicted static length before new chunk is appended
+                self.evicted_static_len = len(self.state_prefix) + \
+                    len(self._cached_state_chunks_str)
 
             # Append new chunk
             self.state_seq.append(StateChunk(new_chunk, new_num_tokens, ts))
@@ -476,13 +479,6 @@ class StateManager2(Node):
                 self._cached_state_chunks_str += '\n' + new_chunk
             else:
                 self._cached_state_chunks_str = new_chunk
-
-            if total_with_new >= self.state_max_tokens:
-                # Capture evicted static length: prefix + all chunks including
-                # the newly appended one (i.e. the first state published after
-                # eviction)
-                self.evicted_static_len = len(self.state_prefix) + \
-                    len(self._cached_state_chunks_str)
 
 
         # Write to long-term memory
