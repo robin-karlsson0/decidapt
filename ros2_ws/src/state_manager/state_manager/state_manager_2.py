@@ -199,6 +199,7 @@ class StateManager2(Node):
         self._cached_running_actions = ''
         self._cached_robot_state_info = ''
 
+        self.state_idx = 0
         self.seq_version = 0
 
         self.lock = threading.Lock()
@@ -492,15 +493,19 @@ class StateManager2(Node):
         msg = String()
         state = self.get_state()
         msg.data = state
-        self.state_pub.publish(msg)
+        try:
+            self.state_pub.publish(msg)
+            self.state_idx += 1
 
-        # Optionally write state to file
-        if self.state_file_pth:
-            try:
-                with open(self.state_file_pth, 'w') as f:
-                    f.write(state)
-            except IOError as e:
-                self.get_logger().error(f'Failed to write state to file: {e}')
+            # Optionally write state to file
+            if self.state_file_pth:
+                try:
+                    with open(self.state_file_pth, 'w') as f:
+                        f.write(state)
+                except IOError as e:
+                    self.get_logger().error(f'Failed to write state to file: {e}')  # noqa
+        except Exception as e:
+            self.get_logger().error(f'Could not publish state: {e}')
 
     def get_state(self) -> str:
         """Get complete state representation.
@@ -518,6 +523,7 @@ class StateManager2(Node):
             "chunks": state_chunks,
             "dyn": self.state_suffix,
             "metadata": {
+                "state_idx": self.state_idx,
                 "seq_version": self.seq_version,
                 "static_char_len": self.state_prefix_len + len(state_chunks)
             }
