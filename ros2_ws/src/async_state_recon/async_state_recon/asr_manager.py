@@ -285,8 +285,8 @@ class ASRManager(Node):
         self._state_lock = threading.RLock()
 
         # j, k, j_ε are None until the first state update is received
-        self._j: Optional[int] = None
-        self._k: Optional[int] = None
+        self._j: int = 0
+        self._k: int = 0
         self._k_ready: int = 0
         self._j_epsilon: Optional[int] = None
         self._x_recon: Optional[str] = None
@@ -327,7 +327,7 @@ class ASRManager(Node):
 
     def run(
         self,
-        state_str: str,
+        state_json_str: str,
         max_tokens: int = 512,
         temp: float = 0.7,
         seed: Optional[int] = None,
@@ -335,13 +335,13 @@ class ASRManager(Node):
     ) -> Any:
         """Main inference entry point — implements Algorithm 1, Inference(X_t).
 
-        Parses X_t from *state_str*, determines the routing case, and dispatches
+        Parses X_t from *state_json_str*, determines the routing case, and dispatches
         to the appropriate resource.  The _state_lock is held for the entire
         routing decision so that a concurrent resource swap cannot interleave
         between the case check and the LLM call.
 
         Args:
-            state_str : JSON-encoded inference request (see module docstring).
+            state_json_str : JSON-encoded inference request (see module docstring).
             max_tokens: Maximum tokens to generate.
             temp      : Sampling temperature.
             seed      : Optional RNG seed for reproducibility.
@@ -349,21 +349,21 @@ class ASRManager(Node):
 
         Returns:
             Non-streaming: ChatCompletion response object.
-            Streaming    : StreamWrapper (from llm_manager) yielding delta chunks.
+            Streaming    : StreamWrapper yielding delta chunks.
 
         Raises:
-            ValueError         : Malformed or missing keys in state_str.
-            json.JSONDecodeError: state_str is not valid JSON.
+            ValueError         : Malformed or missing keys in state_json_str.
+            json.JSONDecodeError: state_json_str is not valid JSON.
         """
-        meta = self._parse_state(state_str)
+        meta = self._parse_state(state_json_str)
         self.stats.total_inference_requests += 1
 
         with self._state_lock:
             return self._route_inference(meta, max_tokens, temp, seed, stream)
 
-    def __call__(self, state_str: str, **kwargs) -> Any:
-        """Callable alias for run() — enables manager(state_str, ...) syntax."""
-        return self.run(state_str, **kwargs)
+    def __call__(self, state_json_str: str, **kwargs) -> Any:
+        """Callable alias for run() — enables manager(state_json_str, ...) syntax."""
+        return self.run(state_json_str, **kwargs)
 
     def get_model_name(self) -> str:
         return self.model_name
@@ -395,15 +395,15 @@ class ASRManager(Node):
         X_t = meta.sequence
 
         # Algorithm 1, line 5-7: initialise j_ε on first reconciliation call
-        if self._j_epsilon is None:
+        if self._j_epsilon is None and k_t > self._k_ready:
             self._j_epsilon = j_epsilon_t
 
         # ------------------------------------------------------------------
         # Case 1: Sequence continuation  (k_t == k)
         # ------------------------------------------------------------------
-        if self._k is None or k_t == self._k:
+        if k_t == self._k:
             # Update reconciliation snapshot whenever static portion grows
-            if self._j is None or j_t > self._j:
+            if j_t > self._j:
                 self._x_recon = X_t[:j_t]
                 self._j = j_t
 
@@ -427,7 +427,7 @@ class ASRManager(Node):
                 delta_x_t = X_t[self._j_epsilon:j_t]
 
                 # Extend reconciliation state with new evicted chunks
-                self._x_recon = (self._x_recon or '') + delta_x_t
+                self._x_recon += delta_x_t
 
                 # Append to catch-up buffer under its dedicated mutex
                 with self._delta_x_epsilon_lock:
@@ -811,16 +811,16 @@ class ASRManager(Node):
     # ==========================================================================
 
     @staticmethod
-    def _parse_state(state_str: str) -> StateMetadata:
+    def _parse_state(state_json_str: str) -> StateMetadata:
         """Parse and validate a JSON state string into a StateMetadata object.
 
         Expected keys: 'sequence', 'j_t', 'k_t', 'j_epsilon_t'.
 
         Raises:
             ValueError         : One or more required keys are absent.
-            json.JSONDecodeError: state_str is not valid JSON.
+            json.JSONDecodeError: state_json_str is not valid JSON.
         """
-        data = json.loads(state_str)
+        data = json.loads(state_json_str)
         required = {'sequence', 'j_t', 'k_t', 'j_epsilon_t'}
         missing = required - data.keys()
         if missing:
@@ -916,7 +916,7 @@ class ASRManager(Node):
           GET  /health              — Algorithm 1 state + stats snapshot
           GET  /                    — API index
 
-        The last message in the 'messages' array must carry the JSON state_str
+        The last message in the 'messages' array must carry the JSON state_json_str
         as its 'content' field (see module-level docstring for format).
 
         Design mirrors LLMManager._start_http_server() for drop-in compatibility.
@@ -956,7 +956,7 @@ class ASRManager(Node):
                 # The upstream client (execute_callback_vllm) tunnels ASR state fields
                 # here rather than encoding them into the message content.
                 asr_meta = body.get('asr_metadata', {})
-                state_str = json.dumps({
+                state_json_str = json.dumps({
                     'sequence':    sequence,
                     'j_t':         asr_meta.get('static_char_len', len(sequence)),
                     'k_t':         asr_meta.get('state_seq_ver', 0),
@@ -965,12 +965,12 @@ class ASRManager(Node):
 
                 if do_stream:
                     return StreamingResponse(
-                        self._generate_sse(state_str, max_tokens, temperature, seed),
+                        self._generate_sse(state_json_str, max_tokens, temperature, seed),
                         media_type='text/event-stream',
                     )
 
                 result = self.run(
-                    state_str, max_tokens=max_tokens,
+                    state_json_str, max_tokens=max_tokens,
                     temp=temperature, seed=seed, stream=False,
                 )
                 return JSONResponse({
@@ -1043,7 +1043,7 @@ class ASRManager(Node):
 
     async def _generate_sse(
         self,
-        state_str: str,
+        state_json_str: str,
         max_tokens: int,
         temperature: float,
         seed: Optional[int],
@@ -1054,7 +1054,7 @@ class ASRManager(Node):
         """
         try:
             stream = self.run(
-                state_str, max_tokens=max_tokens,
+                state_json_str, max_tokens=max_tokens,
                 temp=temperature, seed=seed, stream=True,
             )
             for chunk in stream:
@@ -1128,6 +1128,4 @@ def main(args=None) -> None:
 
 
 if __name__ == '__main__':
-    main()
-    main()
     main()

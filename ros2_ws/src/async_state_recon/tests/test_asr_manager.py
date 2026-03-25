@@ -484,7 +484,7 @@ class TestASRManagerHTTPServer(BaseASRManagerTest):
 
 class TestASRManagerCase1(BaseASRManagerTest):
     """
-    Unit tests for inference queries routed as Case 1: Sequence continuation
+    Unit tests for inference queries routed as "Case 1: Sequence continuation".
     """
 
     @classmethod
@@ -519,6 +519,10 @@ class TestASRManagerCase1(BaseASRManagerTest):
             self.executor.remove_node(self.asr_manager)
             self.asr_manager.destroy_node()
             self.asr_manager = None
+
+    ###########
+    #  Tests
+    ###########
 
     def test_case1_initial_request_initializes_state(self):
         """First inference request routes to r_primary and sets initial state
@@ -616,3 +620,211 @@ class TestASRManagerCase1(BaseASRManagerTest):
         # Verify State Updates (should remain identical to step 1)
         assert self.asr_manager._j == 10
         assert self.asr_manager._x_recon == initial_recon
+
+
+class TestASRManagerCase2(BaseASRManagerTest):
+    """
+    Unit tests for inference queries routed as "Case 2: New sequence version —
+    reconciliation phase (k_t > k)".
+    """
+
+    @classmethod
+    def _get_port(self) -> int:
+        """Return a unique port for each test to avoid interference."""
+        port = TestASRManagerCase2._starting_port + \
+            TestASRManagerCase2._port_counter
+        TestASRManagerCase2._port_counter += 1
+        return port
+
+    @classmethod
+    def setup_class(cls):
+        """Initialize ROS 2 context for all tests in this class."""
+        print('Setting up TestASRManagerCase2 class...')
+        rclpy.init()
+        cls.executor = MultiThreadedExecutor()
+        cls._starting_port = 18100
+        cls._port_counter = 0
+
+    @classmethod
+    def teardown_class(cls):
+        """Shutdown ROS 2 context after all tests complete."""
+        print('Tearing down TestASRManagerCase2 class...')
+        cls.executor.shutdown()
+        rclpy.shutdown()
+
+    def setup_method(self):
+        self.asr_manager = None
+
+    def teardown_method(self):
+        if self.asr_manager is not None:
+            self.executor.remove_node(self.asr_manager)
+            self.asr_manager.destroy_node()
+            self.asr_manager = None
+
+    ###############################################
+    #  Tests | Case 2a: Bridging (k_t > k_ready)
+    ###############################################
+
+    def test_case2a_bridge_state_and_route_to_primary(self):
+        """When k_t > k_ready, query bridges state and routes to r_primary."""
+        port = self._get_port()
+        self.asr_manager = self.create_asr_manager(port)
+        mock_r1, mock_r2 = self.inject_mocks()
+
+        # 1. Establish initial state (k=0)
+        init_state = json.dumps({
+            "sequence": "pre chunk1 chunk2 dyn",
+            "j_t": 18,  # "pre chunk1 chunk2 "
+            "k_t": 0,
+            "j_epsilon_t": 0
+        })
+        self.asr_manager.run(init_state)
+
+        # Verify Routing
+        assert mock_r1.call_count == 1
+        assert mock_r2.call_count == 0
+        assert self.asr_manager.stats.case1_continuations == 1
+        assert self.asr_manager.stats.case2_bridge == 0
+
+        # Verify static sequence is maintained
+        assert self.asr_manager._j_epsilon is None
+        assert self.asr_manager._x_recon == "pre chunk1 chunk2 "
+
+        # Evicted state: "pre chunk2 chunk3dyn"
+
+        # 2. Trigger Case 2a: New sequence version (k=1), secondary not ready
+        #    (k_ready=0)
+        evicted_state = json.dumps({
+            "sequence": "pre chunk2 chunk3 dyn",
+            "j_t": 18,  # "pre chunk2 chunk3 "
+            "k_t": 1,
+            "j_epsilon_t": 11
+        })
+        self.asr_manager.run(evicted_state)
+
+        # Verify Routing
+        assert mock_r1.call_count == 2
+        assert mock_r2.call_count == 0
+        assert self.asr_manager.stats.case1_continuations == 1
+        assert self.asr_manager.stats.case2_bridge == 1
+
+        # Verify bridge state updates
+        assert self.asr_manager._x_recon == "pre chunk1 chunk2 chunk3 "
+
+        # Ensure eviction cursor advanced to current j_t
+        assert self.asr_manager._j_epsilon == 18
+
+        # Verify the actual prompt sent to LLM was bridged correctly
+        assert mock_r1.last_prompt == "pre chunk1 chunk2 chunk3 dyn"
+
+    def test_case2a_multiple_bridging_accumulates_catchup_buffer(self):
+        """Successive requests before r_secondary is ready correctly accumulate
+        delta buffers."""
+        port = self._get_port()
+        self.asr_manager = self.create_asr_manager(port)
+        mock_r1, mock_r2 = self.inject_mocks()
+
+        # 1. Establish initial state (k=0)
+        init_state = json.dumps({
+            "sequence": "pre chunk1 chunk2 dyn",
+            "j_t": 18,  # "pre chunk1 chunk2 "
+            "k_t": 0,
+            "j_epsilon_t": 0
+        })
+        self.asr_manager.run(init_state)
+
+        # 2. First bridge request (k=1)
+        evicted_state_1 = json.dumps({
+            "sequence": "pre chunk2 chunk3 dyn",
+            "j_t": 18,  # "pre chunk2 chunk3 "
+            "k_t": 1,
+            "j_epsilon_t": 11
+        })
+        self.asr_manager.run(evicted_state_1)
+
+        # Assert intermediate catch-up buffer
+        assert self.asr_manager._delta_x_epsilon == "chunk3 "
+        assert self.asr_manager._j_epsilon == 18
+
+        # 3. Second bridge request (k=1)
+        evicted_state_2 = json.dumps({
+            "sequence": "pre chunk2 chunk3 chunk4 dyn",
+            "j_t": 25,  # "pre chunk2 chunk3 chunk4"
+            "k_t": 1,
+            "j_epsilon_t": 11
+        })
+        self.asr_manager.run(evicted_state_2)
+
+        # Verify Routing
+        assert mock_r1.call_count == 3
+        assert mock_r2.call_count == 0
+        assert self.asr_manager.stats.case2_bridge == 2
+
+        # Verify Catch-up Buffer Accumulation
+        # Second delta = sequence[10:13] = "C2 "
+        # Total delta = "fix C1 " + "C2 " = "fix C1 C2 "
+        assert self.asr_manager._delta_x_epsilon == "chunk3 chunk4 "
+        assert self.asr_manager._j_epsilon == 25
+
+    ############################################
+    #  Tests | Case 2b: Swap (k_t == k_ready)
+    ############################################
+
+    def test_case2b_swap_resources_when_ready(self):
+        """When k_t == k_ready, atomically swap resources and route to new
+            primary resource."""
+        port = self._get_port()
+        self.asr_manager = self.create_asr_manager(port)
+        mock_r1, mock_r2 = self.inject_mocks()
+
+        # 1. Establish initial state (k=0)
+        init_state = json.dumps({
+            "sequence": "pre chunk1 chunk2 dyn",
+            "j_t": 18,  # "pre chunk1 chunk2 "
+            "k_t": 0,
+            "j_epsilon_t": 0
+        })
+        self.asr_manager.run(init_state)
+
+        # 2. First bridge request (k=1)
+        evicted_state_1 = json.dumps({
+            "sequence": "pre chunk2 chunk3 dyn",
+            "j_t": 18,  # "pre chunk2 chunk3 "
+            "k_t": 1,
+            "j_epsilon_t": 11
+        })
+        self.asr_manager.run(evicted_state_1)
+
+        # Manually simulate the background reconciliation thread finishing 
+        with self.asr_manager._state_lock:
+            self.asr_manager._k_ready = 1
+            self.asr_manager._is_reconciling = True
+
+        # 2. Trigger Case 2b: k_t (1) == k_ready (1)
+        evicted_state_2 = json.dumps({
+            "sequence": "pre chunk2 chunk3 chunk4 dyn",
+            "j_t": 25,  # "pre chunk2 chunk3 chunk4 "
+            "k_t": 1,
+            "j_epsilon_t": 11
+        })
+        self.asr_manager.run(evicted_state_2)
+
+        # Verify Routing: It should have swapped to mock_r2
+        assert mock_r1.call_count == 2  # From initial + bridge state
+        assert mock_r2.call_count == 1  # From swapped state
+        assert self.asr_manager.stats.case2_swap == 1
+        assert self.asr_manager.stats.swap_count == 1
+
+        # Verify Resource Pointer Swap
+        assert self.asr_manager._r_primary.name == 'R2'
+        assert self.asr_manager._r_secondary.name == 'R1'
+
+        # Verify State Resets & Cursors
+        assert not self.asr_manager._is_reconciling
+        assert self.asr_manager._j == 25
+        assert self.asr_manager._k == 1
+        assert self.asr_manager._j_epsilon is None
+        assert self.asr_manager._x_recon == "pre chunk2 chunk3 chunk4 "
+
+        # Verify the prompt sent to the new primary is exactly the requested sequence
+        assert mock_r2.last_prompt == "pre chunk2 chunk3 chunk4 dyn"
