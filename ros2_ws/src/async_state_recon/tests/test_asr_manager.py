@@ -205,7 +205,6 @@ class BaseASRManagerTest:
     #  Helper methods
     ####################
 
-
     def create_test_parameters(self,
                                r1_url: str = 'http://localhost:8001',
                                r2_url: str = 'http://localhost:8002',
@@ -826,5 +825,123 @@ class TestASRManagerCase2(BaseASRManagerTest):
         assert self.asr_manager._j_epsilon is None
         assert self.asr_manager._x_recon == "pre chunk2 chunk3 chunk4 "
 
-        # Verify the prompt sent to the new primary is exactly the requested sequence
+        # Verify the prompt sent to the new primary resource is exactly the
+        # requested sequence
         assert mock_r2.last_prompt == "pre chunk2 chunk3 chunk4 dyn"
+
+
+class TestASRManagerCase3(BaseASRManagerTest):
+    """
+    Unit tests for inference queries routed as "Case 3: Straggler queries
+    (k_t < k)".
+    """
+
+    @classmethod
+    def _get_port(self) -> int:
+        """Return a unique port for each test to avoid interference."""
+        port = TestASRManagerCase3._starting_port + \
+            TestASRManagerCase3._port_counter
+        TestASRManagerCase3._port_counter += 1
+        return port
+
+    @classmethod
+    def setup_class(cls):
+        """Initialize ROS 2 context for all tests in this class."""
+        print('Setting up TestASRManagerCase3 class...')
+        rclpy.init()
+        cls.executor = MultiThreadedExecutor()
+        cls._starting_port = 18100
+        cls._port_counter = 0
+
+    @classmethod
+    def teardown_class(cls):
+        """Shutdown ROS 2 context after all tests complete."""
+        print('Tearing down TestASRManagerCase3 class...')
+        cls.executor.shutdown()
+        rclpy.shutdown()
+
+    def setup_method(self):
+        self.asr_manager = None
+
+    def teardown_method(self):
+        if self.asr_manager is not None:
+            self.executor.remove_node(self.asr_manager)
+            self.asr_manager.destroy_node()
+            self.asr_manager = None
+
+    ######################################################
+    #  Tests | Case 3: Straggler Queries (k_t < k)
+    ######################################################
+
+    def test_case3_straggler_when_not_reconciling_routes_secondary(self):
+        """When not reconciling, a straggler query routes to r_secondary.
+
+        This tests the path where the secondary resource holds the intact 
+        KV cache for the old sequence, so it can handle delayed requests.
+        """
+        port = self._get_port()
+        self.asr_manager = self.create_asr_manager(port)
+        mock_r1, mock_r2 = self.inject_mocks()
+
+        # Manually advance internal state to simulate we are on sequence k=1
+        # and reconciliation has finished.
+        with self.asr_manager._state_lock:
+            self.asr_manager._k = 1
+            self.asr_manager._is_reconciling = False
+
+        # Create a delayed state request from an older sequence (k_t=0)
+        straggler_state = json.dumps({
+            "sequence": "pre chunk1 chunk2 dyn",
+            "j_t": 18,  # "pre chunk1 chunk2 "
+            "k_t": 0,
+            "j_epsilon_t": 0
+        })
+
+        self.asr_manager.run(straggler_state)
+
+        # Verify Routing: Must go to secondary resource
+        assert mock_r1.call_count == 0, "r_primary should not be called"
+        assert mock_r2.call_count == 1, "Straggler must route to r_secondary"
+
+        # Verify prompt passed matches the exact straggler query
+        assert mock_r2.last_prompt == "pre chunk1 chunk2 dyn"
+
+    def test_case3_straggler_when_reconciling_routes_primary(self):
+        """When reconciling, a straggler query routes to r_primary with bridged
+        state.
+
+        This tests the protection mechanism: if r_secondary is actively
+        precomputing the KV cache for a new sequence, sending a straggler there
+        would thrash the cache. It must dynamically bridge the task  using
+        r_primary's current reconciliation state.
+        """
+        port = self._get_port()
+        self.asr_manager = self.create_asr_manager(port)
+        mock_r1, mock_r2 = self.inject_mocks()
+
+        # Manually advance internal state to simulate we are on sequence k=1,
+        # actively reconciling, and x_recon has been accumulating new chunks.
+        with self.asr_manager._state_lock:
+            self.asr_manager._k = 1
+            self.asr_manager._is_reconciling = True
+            # The extended state built during Case 2a bridging
+            self.asr_manager._x_recon = "pre chunk2 chunk3 chunk4 "
+
+        # Create a delayed state request from an older sequence (k_t=0)
+        straggler_state = json.dumps({
+            "sequence": "pre chunk1 chunk2 dyn",
+            "j_t": 18,  # "pre chunk1 chunk2 "
+            "k_t": 0,
+            "j_epsilon_t": 0
+        })
+
+        self.asr_manager.run(straggler_state)
+
+        # Verify Routing: Must go to primary resource to protect secondary
+        assert mock_r1.call_count == 1, "Protected straggler must route to r_primary"  # noqa
+        assert mock_r2.call_count == 0, "r_secondary should not be interrupted"
+
+        # Verify Prompt Bridging (X'_t <- X_recon + X_dyn)
+        expected_bridged_prompt = "pre chunk2 chunk3 chunk4 dyn"
+
+        assert mock_r1.last_prompt == expected_bridged_prompt
