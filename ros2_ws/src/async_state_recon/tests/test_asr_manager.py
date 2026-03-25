@@ -200,6 +200,11 @@ class BaseASRManagerTest:
             self.executor.remove_node(self.test_node)
             self.test_node.destroy_node()
 
+    ####################
+    #  Helper methods
+    ####################
+
+
     def create_test_parameters(self,
                                r1_url: str = 'http://localhost:8001',
                                r2_url: str = 'http://localhost:8002',
@@ -233,6 +238,75 @@ class BaseASRManagerTest:
             Parameter('http_port', Parameter.Type.INTEGER, http_port),
         ]
 
+    def create_asr_manager(self, port: int) -> ASRManager:
+        """Instantiate ASRManager with test parameters and register it."""
+        asr_manager = ASRManager(
+            parameter_overrides=self.create_test_parameters(http_port=port))
+        self.executor.add_node(asr_manager)
+        return asr_manager
+
+    def inject_mocks(self):
+        """Helper to replace real inference clients with mocks."""
+        model_name = self.asr_manager.get_model_name()
+        mock_r1 = MockInferenceClient('R1', model_name, 'http://localhost:8001')
+        mock_r2 = MockInferenceClient('R2', model_name, 'http://localhost:8002')
+        self.asr_manager._r1 = mock_r1
+        self.asr_manager._r2 = mock_r2
+        self.asr_manager._r_primary = self.asr_manager._r1
+        self.asr_manager._r_secondary = self.asr_manager._r2
+        return mock_r1, mock_r2
+
+    @staticmethod
+    def create_completion_request(
+        model: str = 'default_model',
+        prompt: str = 'Hello hello hello',
+        stream: bool = False,
+        max_tokens: int = 128,
+        temperature: float = 0.7,
+        seed: int = 42,
+        extra_body: dict = None,
+    ) -> dict:
+        """Build parameters for client.chat.completions.create() call.
+
+        Args:
+            model: Model identifier
+            prompt: User prompt/content
+            stream: Enable streaming response
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            seed: Random seed for reproducibility
+            extra_body: Additional parameters (chat_template_kwargs, asr_metadata)
+
+        Returns:
+            dict: Parameters ready to unpack into create() call
+        """
+        # Add default value
+        if not extra_body:
+            extra_body = {
+                "chat_template_kwargs": {
+                    "enable_thinking": False,
+                },
+                "asr_metadata": {
+                    "state_idx": 0,
+                    "state_seq_ver": 0,
+                    "static_char_len": len('Hello hello '),
+                    "evicted_char_length": len('Hello ')
+                }
+            }
+        return {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                },
+            ],
+            "stream": stream,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "seed": seed,
+            "extra_body": extra_body
+        }
 
 class TestASRManagerHTTPServer(BaseASRManagerTest):
     """
@@ -283,57 +357,14 @@ class TestASRManagerHTTPServer(BaseASRManagerTest):
             self.asr_manager.destroy_node()
             self.asr_manager = None
 
-    ####################
-    #  Helper methods
-    ####################
-
-    def _create_asr_manager(self, port: int) -> ASRManager:
-        """Instantiate ASRManager with test parameters and register it."""
-        asr_manager = ASRManager(
-            parameter_overrides=self.create_test_parameters(http_port=port))
-        self.executor.add_node(asr_manager)
-        return asr_manager
-
-    @staticmethod
-    def _create_vLLM_query(
-        content: str = 'Hello hello hello',
-        state_idx: int = 0,
-        state_seq_ver: int = 1,
-        static_char_len: int = 10,
-        evicted_char_length: int = 12,
-        model: str = 'vllm-model',
-        max_tokens: int = 16,
-        temperature: float = 0.0,
-        seed: int = 42,
-        stream: bool = False,
-    ) -> dict:
-        """Build the exact HTTP JSON payload ASRManager receives.
-
-        NOTE: The OpenAI SDK has stripped the "extra_body" wrapper and flattened
-              these two dictionaries into the root payload.
-        """
-        return {
-            'model': model,
-            'messages': [{'role': 'user', 'content': content}],
-            'stream': stream,
-            'max_tokens': max_tokens,
-            'temperature': temperature,
-            'seed': seed,
-            'chat_template_kwargs': {
-                'enable_thinking': False,
-            },
-            'asr_metadata': {
-                'state_idx': state_idx,
-                'state_seq_ver': state_seq_ver,
-                'static_char_len': static_char_len,
-                'evicted_char_length': evicted_char_length,
-            }
-        }
+    ###########
+    #  Tests
+    ###########
 
     def test_http_server_starts_on_init(self):
         """HTTP server thread is created and the port becomes reachable."""
         port = self._get_port()
-        self.asr_manager = self._create_asr_manager(port)
+        self.asr_manager = self.create_asr_manager(port)
 
         assert _wait_for_port('127.0.0.1', port), \
             f"HTTP server did not bind port {port} within \
@@ -346,7 +377,7 @@ class TestASRManagerHTTPServer(BaseASRManagerTest):
     def test_http_server_graceful_shutdown(self):
         """Destroying the node sets the http_server_should_stop event."""
         port = self._get_port()
-        self.asr_manager = self._create_asr_manager(port)
+        self.asr_manager = self.create_asr_manager(port)
 
         assert _wait_for_port('127.0.0.1', port), \
             f"HTTP server did not bind port {port} within \
@@ -378,52 +409,19 @@ class TestASRManagerHTTPServer(BaseASRManagerTest):
           5. The response is a ChatCompletion with non-empty message content.
         """
         port = self._get_port()
-        self.asr_manager = self._create_asr_manager(port)
+        self.asr_manager = self.create_asr_manager(port)
+        mock_r1, mock_r2 = self.inject_mocks()
 
         assert _wait_for_port('127.0.0.1', port), \
             f'HTTP server did not start on port {port}'
-
-        # Inject mock clients so no real vLLM server is needed
-        model_name = self.asr_manager.get_model_name()
-        mock_r1 = MockInferenceClient('R1', model_name, 'http://localhost:8001')
-        mock_r2 = MockInferenceClient('R2', model_name, 'http://localhost:8002')
-        self.asr_manager._r1 = mock_r1
-        self.asr_manager._r2 = mock_r2
-        self.asr_manager._r_primary = self.asr_manager._r1
-        self.asr_manager._r_secondary = self.asr_manager._r2
-
-        # Build a valid ASR state JSON (the format _parse_state expects)
-        prompt = 'Hello hello hello'
-        extra_body = {
-            "chat_template_kwargs": {
-                "enable_thinking": False,
-            },
-            "asr_metadata": {
-                "state_idx": 0,
-                "state_seq_ver": 0,
-                "static_char_len": len('Hello hello '),
-                "evicted_char_length": len('Hello ')
-            }
-        }
 
         # Submit via the OpenAI-compatible client
         client = OpenAI(
             base_url=f'http://127.0.0.1:{port}/v1',
             api_key='dummy-key',
         )
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                },
-            ],
-            stream=False,
-            max_tokens=128,
-            temperature=0.7,
-            seed=14,
-            extra_body=extra_body)
+        params = self.create_completion_request()
+        response = client.chat.completions.create(**params)
 
         assert type(response) is ChatCompletion, 'Response not of type \'ChatCompletion\''  # noqa
         assert response.choices, 'Response must have at least one choice'
@@ -445,53 +443,20 @@ class TestASRManagerHTTPServer(BaseASRManagerTest):
           5. The reconstructed text matches the expected mock output.
         """
         port = self._get_port()
-        self.asr_manager = self._create_asr_manager(port)
+        self.asr_manager = self.create_asr_manager(port)
+        mock_r1, mock_r2 = self.inject_mocks()
 
         assert _wait_for_port('127.0.0.1', port), \
             f'HTTP server did not start on port {port}'
-
-        # Inject mock clients so no real vLLM server is needed
-        model_name = self.asr_manager.get_model_name()
-        mock_r1 = MockInferenceClient('R1', model_name, 'http://localhost:8001')
-        mock_r2 = MockInferenceClient('R2', model_name, 'http://localhost:8002')
-        self.asr_manager._r1 = mock_r1
-        self.asr_manager._r2 = mock_r2
-        self.asr_manager._r_primary = self.asr_manager._r1
-        self.asr_manager._r_secondary = self.asr_manager._r2
-
-        prompt = 'Tell me a story about streaming'
-        extra_body = {
-            "chat_template_kwargs": {
-                "enable_thinking": False,
-            },
-            "asr_metadata": {
-                "state_idx": 0,
-                "state_seq_ver": 0,
-                "static_char_len": len('Tell me a '),
-                "evicted_char_length": 0
-            }
-        }
 
         # Submit via the OpenAI-compatible client
         client = OpenAI(
             base_url=f'http://127.0.0.1:{port}/v1',
             api_key='dummy-key',
         )
-        
-        response_stream = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                },
-            ],
-            stream=True,  # Enable streaming
-            max_tokens=128,
-            temperature=0.7,
-            seed=42,
-            extra_body=extra_body
-        )
+
+        params = self.create_completion_request(stream=True)
+        response_stream = client.chat.completions.create(**params)
 
         collected_chunks = []
         collected_content = ""
@@ -509,8 +474,49 @@ class TestASRManagerHTTPServer(BaseASRManagerTest):
             'Streamed message content must not be empty'
         assert 'Mock response 1 for prompt:' in collected_content, \
             'Reconstructed content did not match expected mock output'
-            
+
         assert mock_r1.call_count == 1, \
             f'Expected 1 inference call on r_primary, got {mock_r1.call_count}'
         assert mock_r2.call_count == 0, \
             f'Expected 0 inference call on r_secondary, got {mock_r2.call_count}'  # noqa
+
+
+class TestASRManagerCase1(BaseASRManagerTest):
+    """
+    Unit tests for inference queries routed as Case 1: Sequence continuation
+    """
+
+    @classmethod
+    def _get_port(self) -> int:
+        """Return a unique port for each test to avoid interference."""
+        port = TestASRManagerHTTPServer._starting_port + \
+            TestASRManagerHTTPServer._port_counter
+        TestASRManagerHTTPServer._port_counter += 1
+        return port
+
+    @classmethod
+    def setup_class(cls):
+        """Initialize ROS 2 context for all tests in this class."""
+        print('Setting up TestASRManagerHTTPServer class...')
+        rclpy.init()
+        cls.executor = MultiThreadedExecutor()
+        cls._starting_port = 18100
+        cls._port_counter = 0
+
+    @classmethod
+    def teardown_class(cls):
+        """Shutdown ROS 2 context after all tests complete."""
+        print('Tearing down TestASRManagerHTTPServer class...')
+        cls.executor.shutdown()
+        rclpy.shutdown()
+
+    def setup_method(self):
+        self.asr_manager = None
+
+    def teardown_method(self):
+        if self.asr_manager is not None:
+            self.executor.remove_node(self.asr_manager)
+            self.asr_manager.destroy_node()
+            self.asr_manager = None
+
+    
