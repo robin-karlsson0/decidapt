@@ -1,3 +1,4 @@
+import json
 import socket
 import time
 import uuid
@@ -489,15 +490,15 @@ class TestASRManagerCase1(BaseASRManagerTest):
     @classmethod
     def _get_port(self) -> int:
         """Return a unique port for each test to avoid interference."""
-        port = TestASRManagerHTTPServer._starting_port + \
-            TestASRManagerHTTPServer._port_counter
-        TestASRManagerHTTPServer._port_counter += 1
+        port = TestASRManagerCase1._starting_port + \
+            TestASRManagerCase1._port_counter
+        TestASRManagerCase1._port_counter += 1
         return port
 
     @classmethod
     def setup_class(cls):
         """Initialize ROS 2 context for all tests in this class."""
-        print('Setting up TestASRManagerHTTPServer class...')
+        print('Setting up TestASRManagerCase1 class...')
         rclpy.init()
         cls.executor = MultiThreadedExecutor()
         cls._starting_port = 18100
@@ -506,7 +507,7 @@ class TestASRManagerCase1(BaseASRManagerTest):
     @classmethod
     def teardown_class(cls):
         """Shutdown ROS 2 context after all tests complete."""
-        print('Tearing down TestASRManagerHTTPServer class...')
+        print('Tearing down TestASRManagerCase1 class...')
         cls.executor.shutdown()
         rclpy.shutdown()
 
@@ -519,4 +520,99 @@ class TestASRManagerCase1(BaseASRManagerTest):
             self.asr_manager.destroy_node()
             self.asr_manager = None
 
-    
+    def test_case1_initial_request_initializes_state(self):
+        """First inference request routes to r_primary and sets initial state
+        cursors.
+        """
+        port = self._get_port()
+        self.asr_manager = self.create_asr_manager(port)
+        mock_r1, mock_r2 = self.inject_mocks()
+
+        state_json_str = json.dumps({
+            "sequence": "pre chunks dyn",
+            "j_t": 10,  # "pre chunks "
+            "k_t": 0,
+            "j_epsilon_t": 0
+        })
+
+        self.asr_manager.run(state_json_str)
+
+        # Verify Routing
+        assert mock_r1.call_count == 1, "Initial request must route to r_primary"  # noqa
+        assert mock_r2.call_count == 0, "r_secondary should not be called"
+
+        # Verify Metrics
+        assert self.asr_manager.stats.case1_continuations == 1
+        assert self.asr_manager.stats.total_inference_requests == 1
+
+        # Verify State Updates
+        assert self.asr_manager._j == 10
+        assert self.asr_manager._x_recon == "pre chunks"
+
+    def test_case1_sequence_growth_updates_recon_state(self):
+        """Subsequent request with same sequence version k updates x_recon."""
+        port = self._get_port()
+        self.asr_manager = self.create_asr_manager(port)
+        mock_r1, mock_r2 = self.inject_mocks()
+
+        # 1. Initial request
+        state_json_str = json.dumps({
+            "sequence": "pre chunks dyn",
+            "j_t": 10,  # "pre chunks"
+            "k_t": 0,
+            "j_epsilon_t": 0
+        })
+        self.asr_manager.run(state_json_str)
+
+        # 2. Sequence grows
+        state_json_str = json.dumps({
+            "sequence": "pre chunks chunks dyn",
+            "j_t": 17,  # "pre chunks chunks"
+            "k_t": 0,
+            "j_epsilon_t": 0
+        })
+        self.asr_manager.run(state_json_str)
+
+        # Verify Routing
+        assert mock_r1.call_count == 2
+        assert mock_r2.call_count == 0
+        assert self.asr_manager.stats.case1_continuations == 2
+
+        # Verify State Updates
+        assert self.asr_manager._j == 17
+        assert self.asr_manager._x_recon == "pre chunks chunks"
+
+    def test_case1_static_context_unchanged(self):
+        """Subsequent request with same static context bypasses update."""
+        port = self._get_port()
+        self.asr_manager = self.create_asr_manager(port)
+        mock_r1, mock_r2 = self.inject_mocks()
+
+        # 1. Initial request
+        state_json_str = json.dumps({
+            "sequence": "pre chunks dyn",
+            "j_t": 10,  # "pre chunks"
+            "k_t": 0,
+            "j_epsilon_t": 0
+        })
+        self.asr_manager.run(state_json_str)
+
+        initial_recon = self.asr_manager._x_recon
+
+        # 2. Dynamic task swapped, but static context remains exactly the same
+        state_json_str = json.dumps({
+            "sequence": "pre chunks DYN",
+            "j_t": 10,  # "pre chunks"
+            "k_t": 0,
+            "j_epsilon_t": 0
+        })
+        self.asr_manager.run(state_json_str)
+
+        # Verify Routing
+        assert mock_r1.call_count == 2
+        assert mock_r2.call_count == 0
+        assert self.asr_manager.stats.case1_continuations == 2
+
+        # Verify State Updates (should remain identical to step 1)
+        assert self.asr_manager._j == 10
+        assert self.asr_manager._x_recon == initial_recon
