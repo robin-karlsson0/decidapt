@@ -7,3 +7,5 @@ numpy
 pytest
 transformers
 openai
+fastapi
+uvicorn
