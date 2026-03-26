@@ -278,7 +278,7 @@ class BaseASRManagerTest:
     @staticmethod
     def create_completion_request(
         model: str = 'default_model',
-        prompt: str = 'Hello hello hello',
+        prompt: str = 'Hello ' * 10,
         stream: bool = False,
         max_tokens: int = 128,
         temperature: float = 0.7,
