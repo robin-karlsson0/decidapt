@@ -26,14 +26,6 @@ Three Inference Routing Cases:
     └─ is_reconciling     : Protect r_secondary → reconstruct and run on r_primary
     └─ else               : r_secondary holds intact old KV cache → route there
 
-State Topic Message Format  (JSON in std_msgs/String on /asr_state):
-  {
-    "sequence"    : str,   # Full X_t = pre + static_chunks [+ dyn suffix]
-    "j_t"         : int,   # len(pre + static_chunks)
-    "k_t"         : int,   # Sequence version of this message
-    "j_epsilon_t" : int    # len(evicted_prefix) at eviction time; 0 if k_t == k
-  }
-
 Inference Request Format  (JSON passed to run() / HTTP POST):
   {
     "sequence"    : str,   # Full X_t including dynamic suffix
@@ -72,7 +64,6 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from starlette.requests import Request
-from std_msgs.msg import String
 
 from .inference_client import (ClientType, InferenceClient,
                                create_inference_client)
@@ -80,16 +71,16 @@ from .inference_client import (ClientType, InferenceClient,
 
 class StreamWrapper:
     """Wrapper that ensures client is released after stream consumption.
-    
+
     This wrapper is crucial for streaming responses. Without it, the context
     manager would release the client immediately after returning the stream
     iterator, even though the stream is still being actively consumed.
-    
+
     The wrapper:
     - Keeps the client locked (active_requests > 0) during streaming
     - Releases the client only after stream is fully consumed
     - Handles cleanup via __del__ if stream is abandoned mid-consumption
-    
+
     Args:
         stream_iterator: The raw stream iterator from the inference client
         client_idx: Index of the client being used
@@ -140,6 +131,7 @@ class StreamWrapper:
 # ---------------------------------------------------------------------------
 # Data containers
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class StateMetadata:
@@ -210,8 +202,6 @@ class ASRManager(Node):
     eviction_ratio : float
         Fraction of chunks to retain after eviction, 0 < ratio < 1
         (default: 0.3, i.e. keep the most recent 30 %)
-    state_topic : str
-        ROS 2 topic for state update messages (default: '/asr_state')
     enable_http_server : bool
         Expose an OpenAI-compatible HTTP endpoint (default: False)
     http_host : str
@@ -729,84 +719,6 @@ class ASRManager(Node):
             with self._state_lock:
                 self._is_reconciling = False
             raise
-
-    # ==========================================================================
-    # ROS 2 state subscription callback
-    # ==========================================================================
-
-    def _state_update_callback(self, msg: String) -> None:
-        """ROS 2 callback for the /asr_state topic.
-
-        Serves two purposes:
-          1. Maintain the j / k cursors for the inference routing logic.
-          2. Detect eviction events (k_t > k) and trigger reconciliation.
-
-        Routing:
-          k_t == k  : Static portion grew — update j cursor and X_recon snapshot.
-          k_t > k   : Eviction event — reconstruct X_ε and start reconciliation.
-          k_t < k   : Stale / out-of-order update — log and discard.
-
-        Args:
-            msg: std_msgs/String carrying a JSON-encoded StateMetadata dict.
-        """  # noqa
-        try:
-            meta = self._parse_state(msg.data)
-        except (json.JSONDecodeError, ValueError) as exc:
-            self.get_logger().error(f'[STATE] Malformed state message: {exc}')
-            return
-
-        with self._state_lock:
-            current_k = self._k
-
-        # ---- First-ever state message ----
-        if current_k is None:
-            with self._state_lock:
-                self._k = meta.k_t
-                self._j = meta.j_t
-                self._j_epsilon = meta.j_epsilon_t or None
-                self._x_recon = meta.static_prefix
-            self.get_logger().info(
-                f'[STATE] Initialised: k={meta.k_t} j={meta.j_t}'
-            )
-            return
-
-        # ---- Sequence continuation ----
-        if meta.k_t == current_k:
-            with self._state_lock:
-                if meta.j_t > (self._j or 0):
-                    self._x_recon = meta.static_prefix
-                    self._j = meta.j_t
-            self.get_logger().debug(
-                f'[STATE] Continuation: k={meta.k_t} j={meta.j_t}'
-            )
-            return
-
-        # ---- Eviction event: new sequence version ----
-        if meta.k_t > current_k:
-            # X_eps is the initial post-eviction state: everything up to
-            # j_epsilon_t
-            x_epsilon = meta.sequence[:meta.j_epsilon_t]
-            self.get_logger().info(
-                f'[STATE] Eviction k {current_k}→{meta.k_t} '
-                f'j_ε={meta.j_epsilon_t} |X_ε|={len(x_epsilon)}c'
-            )
-            # Update k cursor before starting reconciliation so that concurrent
-            # Case-2 inference calls see the new k immediately.
-            with self._state_lock:
-                self._k = meta.k_t
-                self._j = meta.j_t
-                self._j_epsilon = meta.j_epsilon_t
-                if meta.j_t > 0:
-                    self._x_recon = meta.static_prefix
-
-            self._start_reconciliation(x_epsilon, meta.k_t)
-            return
-
-        # ---- Stale / out-of-order update ----
-        self.get_logger().warn(
-            f'[STATE] Stale update: k_t={meta.k_t} < current k={current_k}; '
-            f'discarded.'
-        )
 
     # ==========================================================================
     # Helpers — reused from experimental ASRManager
