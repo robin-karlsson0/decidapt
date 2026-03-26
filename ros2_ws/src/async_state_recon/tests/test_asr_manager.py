@@ -7,6 +7,7 @@ from typing import Generator, List
 import rclpy
 from async_state_recon.asr_manager import ASRManager
 from async_state_recon.inference_client import InferenceClient
+from exodapt_robot_interfaces.srv import StartReconciliation
 from openai import OpenAI
 from openai.types import CompletionUsage
 from openai.types.chat.chat_completion import (ChatCompletion,
@@ -275,7 +276,8 @@ class BaseASRManagerTest:
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
             seed: Random seed for reproducibility
-            extra_body: Additional parameters (chat_template_kwargs, asr_metadata)
+            extra_body: Additional parameters (chat_template_kwargs,
+                asr_metadata)
 
         Returns:
             dict: Parameters ready to unpack into create() call
@@ -307,6 +309,7 @@ class BaseASRManagerTest:
             "seed": seed,
             "extra_body": extra_body
         }
+
 
 class TestASRManagerHTTPServer(BaseASRManagerTest):
     """
@@ -794,7 +797,7 @@ class TestASRManagerCase2(BaseASRManagerTest):
         })
         self.asr_manager.run(evicted_state_1)
 
-        # Manually simulate the background reconciliation thread finishing 
+        # Manually simulate the background reconciliation thread finishing
         with self.asr_manager._state_lock:
             self.asr_manager._k_ready = 1
             self.asr_manager._is_reconciling = True
@@ -876,7 +879,7 @@ class TestASRManagerCase3(BaseASRManagerTest):
     def test_case3_straggler_when_not_reconciling_routes_secondary(self):
         """When not reconciling, a straggler query routes to r_secondary.
 
-        This tests the path where the secondary resource holds the intact 
+        This tests the path where the secondary resource holds the intact
         KV cache for the old sequence, so it can handle delayed requests.
         """
         port = self._get_port()
@@ -945,3 +948,215 @@ class TestASRManagerCase3(BaseASRManagerTest):
         expected_bridged_prompt = "pre chunk2 chunk3 chunk4 dyn"
 
         assert mock_r1.last_prompt == expected_bridged_prompt
+        assert mock_r1.last_prompt == expected_bridged_prompt
+
+
+class TestASRManagerReconciliation(BaseASRManagerTest):
+    """
+    Unit tests for the Asynchronous State Reconciliation background process
+    and its triggering ROS 2 service.
+    """
+
+    @classmethod
+    def _get_port(self) -> int:
+        port = TestASRManagerReconciliation._starting_port + \
+            TestASRManagerReconciliation._port_counter
+        TestASRManagerReconciliation._port_counter += 1
+        return port
+
+    @classmethod
+    def setup_class(cls):
+        print('Setting up TestASRManagerReconciliation class...')
+        rclpy.init()
+        cls.executor = MultiThreadedExecutor()
+        cls._starting_port = 18100
+        cls._port_counter = 0
+
+    @classmethod
+    def teardown_class(cls):
+        print('Tearing down TestASRManagerReconciliation class...')
+        cls.executor.shutdown()
+        rclpy.shutdown()
+
+    def setup_method(self):
+        self.asr_manager = None
+
+    def teardown_method(self):
+        if self.asr_manager is not None:
+            self.executor.remove_node(self.asr_manager)
+            self.asr_manager.destroy_node()
+            self.asr_manager = None
+
+    ######################################################
+    #  Tests | Background Reconcile Daemon
+    ######################################################
+
+    def test_reconcile_basic_warmup_completes_and_authorizes_swap(self):
+        """A simple reconciliation completes prefill and sets k_ready."""
+        port = self._get_port()
+        self.asr_manager = self.create_asr_manager(port)
+        mock_r1, mock_r2 = self.inject_mocks()
+
+        # Reconciliation call variables
+        x_epsilon = "pre chunk2 "
+        k_target = 1
+
+        # Skip service callback ==> Trigger the background daemon directly
+        self.asr_manager._start_reconciliation(x_epsilon, k_target)
+
+        # Wait for the background thread to finish its work
+        self.asr_manager._reconciliation_thread.join(timeout=2.0)
+
+        # Assertions
+        assert not self.asr_manager._reconciliation_thread.is_alive()
+        assert mock_r2.call_count == 1, "Expected exactly 1 prefill call on r_secondary"  # noqa
+        assert self.asr_manager._k_ready == k_target, "k_ready was not updated"
+        assert self.asr_manager._delta_x_epsilon == "", "Catch-up buffer not cleared"  # noqa
+
+    def test_reconcile_catchup_loop_drains_buffer(self):
+        """Reconciliation loops if delta buffer grows beyond threshold during
+        warmup."""
+        port = self._get_port()
+        # Set a very small catchup threshold so we can easily trigger the loop
+        self.asr_manager = self.create_asr_manager(port)
+        self.asr_manager.catchup_thresh = 10
+        mock_r1, mock_r2 = self.inject_mocks()
+
+        # Artificially slow down r_secondary so we have time to inject data
+        mock_r2.latency = 0.2
+
+        x_epsilon = "pre chunk2 "
+        k_target = 1
+
+        # 1. Start the slow background warmup
+        self.asr_manager._start_reconciliation(x_epsilon, k_target)
+
+        # 2. Yield briefly to ensure the background thread locks r_secondary and
+        #    starts
+        time.sleep(0.05)
+
+        # 3. Simulate concurrent Case 2a inference requests filling the buffer
+        # We inject a string larger than catchup_thresh (10 chars)
+        injected_chunks = "chunk3 chunk4 chunk5 "
+        with self.asr_manager._delta_x_epsilon_lock:
+            self.asr_manager._delta_x_epsilon += injected_chunks
+
+        # 4. Wait for the catch-up loop to process the injected data and finish
+        self.asr_manager._reconciliation_thread.join(timeout=2.0)
+
+        # Assertions
+        assert not self.asr_manager._reconciliation_thread.is_alive()
+
+        # It should take at least 2 calls: 1 for the initial warmup, 1 for the
+        # catch-up loop
+        assert mock_r2.call_count >= 2, "Catch-up loop did not cycle as expected"  # noqa
+        assert self.asr_manager._k_ready == k_target, "Swap was not authorized"
+
+        with self.asr_manager._delta_x_epsilon_lock:
+            assert self.asr_manager._delta_x_epsilon == "", "Final drain failed to empty buffer"  # noqa
+
+    ######################################################
+    #  Tests | StartReconciliation ROS 2 Service
+    ######################################################
+
+    def test_service_trigger_and_full_reconciliation_lifecycle(self):
+        """
+        Verifies the full lifecycle of a service-triggered reconciliation:
+        1. Service trigger (starts daemon, active state unchanged)
+        2. Daemon completion (updates k_ready, leaves k unchanged)
+        3. Next inference request (triggers Case 2b swap, finalizes state)
+        """
+        port = self._get_port()
+        self.asr_manager = self.create_asr_manager(port)
+        mock_r1, mock_r2 = self.inject_mocks()
+
+        # Artificially slow down r_secondary so we have time to inject data
+        mock_r2.latency = 0.2
+
+        # Setup initial active state (Sequence k=0)
+        self.asr_manager._k = 0
+        self.asr_manager._k_ready = 0
+        self.asr_manager._j_epsilon = None
+        self.asr_manager._x_recon = "pre chunks "
+
+        request = StartReconciliation.Request()
+        request.evicted_state = "pre chunk2 "
+        request.evicted_state_seq_ver = 1
+        response = StartReconciliation.Response()
+
+        # ==========================================
+        # PHASE 1: Trigger and verify active state
+        # ==========================================
+        result = self.asr_manager._start_reconciliation_callback(
+            request, response)
+
+        assert result.success is True
+        assert self.asr_manager._k == 0  # Active sequence hasn't swapped
+        assert self.asr_manager._k_ready == 0  # Secondary not ready yet
+        assert self.asr_manager._is_reconciling is True
+        assert self.asr_manager._reconciliation_thread.is_alive()
+
+        # ==========================================
+        # PHASE 2: Wait for daemon to complete
+        # ==========================================
+        self.asr_manager._reconciliation_thread.join(timeout=2.0)
+
+        assert not self.asr_manager._reconciliation_thread.is_alive()
+        assert mock_r2.call_count == 1, "r_secondary should have been warmed up"
+
+        # The daemon authorizes the swap by updating k_ready
+        assert self.asr_manager._k_ready == 1
+
+        # Crucially, k and is_reconciling do NOT change yet!
+        # They wait for the next inference request to execute the swap.
+        assert self.asr_manager._k == 0
+        assert self.asr_manager._is_reconciling is True
+
+        # ==========================================
+        # PHASE 3: The Atomic Swap (Case 2b)
+        # ==========================================
+        # An inference request arrives matching the newly ready sequence
+        next_inference_state = json.dumps({
+            "sequence": "pre chunk2 chunk 3 dyn",
+            "j_t": 19,  # "pre chunk2 chunk 3 "
+            "k_t": 1,
+            "j_epsilon_t": 11
+        })
+        self.asr_manager.run(next_inference_state)
+
+        # Now the state should be fully finalized
+        assert self.asr_manager._k == 1
+        assert self.asr_manager._is_reconciling is False
+        assert self.asr_manager._r_primary.name == 'R2'
+        assert self.asr_manager._r_secondary.name == 'R1'
+
+    def test_service_rejects_stale_and_duplicate_triggers(self):
+        """The service protects against overlapping or outdated sequence ver."""
+        port = self._get_port()
+        self.asr_manager = self.create_asr_manager(port)
+        mock_r1, mock_r2 = self.inject_mocks()
+
+        # 1. Test Stale Request Guard
+        self.asr_manager._k = 5
+        request = StartReconciliation.Request()
+        request.evicted_state = "pre chunk "
+        request.evicted_state_seq_ver = 3  # Older than current k
+
+        response = StartReconciliation.Response()
+        result = self.asr_manager._start_reconciliation_callback(
+            request, response)
+
+        assert result.success is False
+        assert self.asr_manager._k == 5  # Unchanged
+        assert self.asr_manager._reconciliation_thread is None
+
+        # 2. Test Concurrent Lock Guard
+        self.asr_manager._k = 5
+        self.asr_manager._is_reconciling = True  # Simulate active daemon
+
+        request.evicted_state_seq_ver = 6  # Valid new k
+        result = self.asr_manager._start_reconciliation_callback(
+            request, response)
+
+        assert result.success is False
+        assert self.asr_manager._k == 5  # Unchanged, trigger rejected

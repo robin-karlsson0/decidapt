@@ -8,11 +8,11 @@ management and zero-latency inference routing.
 Algorithm Overview
 ------------------
 State Variables (per Algorithm 1):
-  j          : Char length of current active sequence static state (pre + chunks)
+  j          : Char length of current active seq static state (pre + chunks)
   k          : Current active sequence version
   k_ready    : Highest sequence version fully precomputed on r_secondary
-  j_ε        : Evicted sequence static state char length (running eviction cursor)
-  X_recon    : Reconciliation state — extends current seq with new evicted chunks
+  j_ε        : Evicted sequence static state char len (running eviction cursor)
+  X_recon    : Reconciliation state — extends current seq w. new evicted chunks
   ΔX_ε       : Catch-up buffer for chunks that arrive during r_secondary warmup
   r_primary  : Resource actively serving inference (KV cache = current sequence)
   r_secondary: Resource precomputing KV cache for the new evicted sequence
@@ -39,7 +39,7 @@ Inference Request Format  (JSON passed to run() / HTTP POST):
     "sequence"    : str,   # Full X_t including dynamic suffix
     "j_t"         : int,   # Boundary between static and dynamic portions
     "k_t"         : int,   # Sequence version of this request
-    "j_epsilon_t" : int    # Evicted prefix length (populated on first k_t > k call)
+    "j_epsilon_t" : int    # Evicted static len (populated on first k_t > k call)
   }
 
 ROS 2 Reuse:
@@ -52,7 +52,7 @@ Experimental ASRManager Reuse:
   - evict()         — suffix-based chunk eviction (Eq. 4)
   - _prefill()      — 1-token generation to warm KV cache
   - _count_tokens() — tokenizer-backed token counting
-"""
+"""  # noqa
 
 from __future__ import annotations
 
@@ -60,18 +60,17 @@ import asyncio
 import json
 import threading
 import time
-from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import rclpy
 import uvicorn
+from exodapt_robot_interfaces.srv import StartReconciliation
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from starlette.requests import Request
 from std_msgs.msg import String
 
@@ -134,7 +133,7 @@ class StreamWrapper:
         """Ensure client is released even if stream is not fully consumed."""
         if not self._consumed:
             self._manager.get_logger().info(
-                f"Stream not fully consumed, releasing client {self._client_idx}"
+                f"Stream not fully consumed, releasing client {self._client_idx}"  # noqa
             )
             self._release_client()
 
@@ -152,7 +151,7 @@ class StateMetadata:
     sequence: str       # Full X_t content
     j_t: int            # len(static prefix)  — boundary between static and dyn
     k_t: int            # Sequence version of this message
-    j_epsilon_t: int    # len(evicted prefix) at the time of eviction; 0 otherwise
+    j_epsilon_t: int    # len(evicted static) at eviction time; 0 otherwise
 
     @property
     def static_prefix(self) -> str:
@@ -306,6 +305,13 @@ class ASRManager(Node):
         # ------------------------------------------------------------------
         # ROS 2 service
         # ------------------------------------------------------------------
+        self._recon_callback_group = MutuallyExclusiveCallbackGroup()
+        self._recon_service = self.create_service(
+            StartReconciliation,
+            'start_reconciliation',
+            self._start_reconciliation_callback,
+            callback_group=self._recon_callback_group
+        )
 
         # ------------------------------------------------------------------
         # Optional HTTP server  (OpenAI-compatible, mirrors LLMManager)
@@ -335,10 +341,10 @@ class ASRManager(Node):
     ) -> Any:
         """Main inference entry point — implements Algorithm 1, Inference(X_t).
 
-        Parses X_t from *state_json_str*, determines the routing case, and dispatches
-        to the appropriate resource.  The _state_lock is held for the entire
-        routing decision so that a concurrent resource swap cannot interleave
-        between the case check and the LLM call.
+        Parses X_t from *state_json_str*, determines the routing case, and
+        dispatches to the appropriate resource.  The _state_lock is held for the
+        entire routing decision so that a concurrent resource swap cannot
+        interleave between the case check and the LLM call.
 
         Args:
             state_json_str : JSON-encoded inference request (see module docstring).
@@ -354,7 +360,7 @@ class ASRManager(Node):
         Raises:
             ValueError         : Malformed or missing keys in state_json_str.
             json.JSONDecodeError: state_json_str is not valid JSON.
-        """
+        """  # noqa
         meta = self._parse_state(state_json_str)
         self.stats.total_inference_requests += 1
 
@@ -362,11 +368,55 @@ class ASRManager(Node):
             return self._route_inference(meta, max_tokens, temp, seed, stream)
 
     def __call__(self, state_json_str: str, **kwargs) -> Any:
-        """Callable alias for run() — enables manager(state_json_str, ...) syntax."""
+        """Callable alias for run() — enables manager(state_json_str, ...)."""
         return self.run(state_json_str, **kwargs)
 
     def get_model_name(self) -> str:
         return self.model_name
+
+    def _start_reconciliation_callback(
+        self,
+        request: StartReconciliation.Request,
+        response: StartReconciliation.Response
+    ) -> StartReconciliation.Response:
+        """
+        ROS 2 service callback to trigger Reconcile(X_eps, k_target).
+
+        Extracts X_eps and the target sequence version from the request,
+        authorizes the new sequence version (k_t), updates cursors, and
+        spawns the background prefill loop.
+        """
+        k_target = request.evicted_state_seq_ver
+
+        self.get_logger().info(
+            f'[SERVICE] StartReconciliation called: k_target={k_target}'
+        )
+
+        with self._state_lock:
+            # 1. Guard against overlapping reconciliation requests
+            if self._is_reconciling:
+                self.get_logger().warn(
+                    f'[SERVICE] Reconciliation already in progress. '
+                    f'Rejecting trigger for k_target={k_target}.'
+                )
+                response.success = False
+                return response
+
+            # 2. Guard against stale or out-of-order service calls
+            if k_target <= self._k:
+                self.get_logger().warn(
+                    f'[SERVICE] Stale reconciliation request: k_target={k_target} '  # noqa
+                    f'<= current k={self._k}. Rejecting.'
+                )
+                response.success = False
+                return response
+
+        # 5. Spawn the background Reconcile daemon on r_secondary
+        # (This handles the L_{ΔXε} lock and sets is_reconciling = True)
+        self._start_reconciliation(request.evicted_state, k_target)
+
+        response.success = True
+        return response
 
     # ==========================================================================
     # Algorithm 1 — Inference procedure
@@ -411,7 +461,8 @@ class ASRManager(Node):
             self.get_logger().debug(
                 f'[INFER-C1] k={k_t} j={j_t} -> {self._r_primary.name}'
             )
-            return self._llm(X_t, self._r_primary, max_tokens, temp, seed, stream)
+            return self._llm(
+                X_t, self._r_primary, max_tokens, temp, seed, stream)
 
         # ------------------------------------------------------------------
         # Case 2: New sequence version — reconciliation phase  (k_t > k)
@@ -445,7 +496,8 @@ class ASRManager(Node):
                     f'[INFER-C2a] bridge k_t={k_t} k_ready={self._k_ready} '
                     f'delta={len(delta_x_t)}c -> {self._r_primary.name}'
                 )
-                return self._llm(x_prime, self._r_primary, max_tokens, temp, seed, stream)
+                return self._llm(
+                    x_prime, self._r_primary, max_tokens, temp, seed, stream)
 
             elif k_t == self._k_ready:
                 # ---------------------------------------------------------
@@ -467,7 +519,8 @@ class ASRManager(Node):
                     f'[INFER-C2b] SWAP k={k_t} '
                     f'r_primary now={self._r_primary.name}'
                 )
-                return self._llm(X_t, self._r_primary, max_tokens, temp, seed, stream)
+                return self._llm(
+                    X_t, self._r_primary, max_tokens, temp, seed, stream)
 
         # ------------------------------------------------------------------
         # Case 3: Straggler queries  (k_t < k)
@@ -486,7 +539,8 @@ class ASRManager(Node):
                     f'[INFER-C3a] straggler(recon) k_t={k_t} k={self._k} '
                     f'-> {self._r_primary.name}'
                 )
-                return self._llm(x_prime, self._r_primary, max_tokens, temp, seed, stream)
+                return self._llm(
+                    x_prime, self._r_primary, max_tokens, temp, seed, stream)
             else:
                 # ---------------------------------------------------------
                 # Case 3b: r_secondary holds the intact KV cache for the
@@ -497,7 +551,8 @@ class ASRManager(Node):
                     f'[INFER-C3b] straggler k_t={k_t} k={self._k} '
                     f'-> {self._r_secondary.name}'
                 )
-                return self._llm(X_t, self._r_secondary, max_tokens, temp, seed, stream)
+                return self._llm(
+                    X_t, self._r_secondary, max_tokens, temp, seed, stream)
 
         # Should never be reached under correct operation
         self.get_logger().error(
@@ -576,7 +631,7 @@ class ASRManager(Node):
         Args:
             x_epsilon : Initial evicted state (the shorter post-eviction context).
             k_target  : The sequence version being precomputed.
-        """
+        """  # noqa
         try:
             # ---- Step 1: Clear catch-up buffer ----
             # Algorithm 1 line: "Lock(L_{ΔXε}); ΔX_ε ← ∅; Unlock(L_{ΔXε})"
@@ -632,7 +687,7 @@ class ASRManager(Node):
                     f'in {time.monotonic() - t0:.3f}s'
                 )
 
-            # ---- Step 4: Final drain — flush any remainder below threshold ----
+            # --- Step 4: Final drain — flush any remainder below threshold ---
             # Algorithm 1 note: "Remainder computed at next task inference"
             # We eagerly drain it here so the swap is as fresh as possible.
             with self._delta_x_epsilon_lock:
@@ -691,7 +746,7 @@ class ASRManager(Node):
 
         Args:
             msg: std_msgs/String carrying a JSON-encoded StateMetadata dict.
-        """
+        """  # noqa
         try:
             meta = self._parse_state(msg.data)
         except (json.JSONDecodeError, ValueError) as exc:
@@ -726,7 +781,8 @@ class ASRManager(Node):
 
         # ---- Eviction event: new sequence version ----
         if meta.k_t > current_k:
-            # X_ε is the initial post-eviction state: everything up to j_epsilon_t
+            # X_eps is the initial post-eviction state: everything up to
+            # j_epsilon_t
             x_epsilon = meta.sequence[:meta.j_epsilon_t]
             self.get_logger().info(
                 f'[STATE] Eviction k {current_k}→{meta.k_t} '
@@ -920,7 +976,7 @@ class ASRManager(Node):
         as its 'content' field (see module-level docstring for format).
 
         Design mirrors LLMManager._start_http_server() for drop-in compatibility.
-        """
+        """  # noqa
         # try:
         #     from fastapi import FastAPI
         #     from fastapi.responses import JSONResponse, StreamingResponse
@@ -942,7 +998,7 @@ class ASRManager(Node):
 
         @app.post('/v1/chat/completions')
         async def chat_completions(request: Request):
-            """OpenAI-compatible completions. Last message content = ASR state JSON."""
+            """OpenAI-compatible completions."""
             try:
                 body = await request.json()
                 messages = body.get('messages', [])
@@ -952,20 +1008,22 @@ class ASRManager(Node):
                 seed = body.get('seed', None)
                 do_stream = body.get('stream', False)
 
-                # Reconstruct the StateMetadata JSON from extra_body["asr_metadata"].
-                # The upstream client (execute_callback_vllm) tunnels ASR state fields
-                # here rather than encoding them into the message content.
+                # Reconstruct the StateMetadata JSON from
+                # extra_body["asr_metadata"]
+                # The upstream client (execute_callback_vllm) tunnels ASR state
+                # fields here rather than encoding them into the message content
                 asr_meta = body.get('asr_metadata', {})
                 state_json_str = json.dumps({
-                    'sequence':    sequence,
-                    'j_t':         asr_meta.get('static_char_len', len(sequence)),
-                    'k_t':         asr_meta.get('state_seq_ver', 0),
+                    'sequence': sequence,
+                    'j_t': asr_meta.get('static_char_len', len(sequence)),
+                    'k_t': asr_meta.get('state_seq_ver', 0),
                     'j_epsilon_t': asr_meta.get('evicted_char_length', 0),
                 })
 
                 if do_stream:
                     return StreamingResponse(
-                        self._generate_sse(state_json_str, max_tokens, temperature, seed),
+                        self._generate_sse(
+                            state_json_str, max_tokens, temperature, seed),
                         media_type='text/event-stream',
                     )
 
@@ -994,7 +1052,8 @@ class ASRManager(Node):
                 })
             except Exception as exc:
                 self.get_logger().error(f'[HTTP] chat_completions: {exc}')
-                return JSONResponse(status_code=500, content={'error': str(exc)})
+                return JSONResponse(
+                    status_code=500, content={'error': str(exc)})
 
         @app.get('/v1/models')
         async def list_models():
@@ -1062,7 +1121,9 @@ class ASRManager(Node):
                     final = {
                         'id': f'chatcmpl-{int(time.time() * 1000)}',
                         'object': 'chat.completion.chunk',
-                        'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}],
+                        'choices': [
+                            {'index': 0, 'delta': {}, 'finish_reason': 'stop'}
+                        ],
                     }
                     yield f'data: {json.dumps(final)}\n\n'
                     yield 'data: [DONE]\n\n'
@@ -1088,13 +1149,15 @@ class ASRManager(Node):
     # ==========================================================================
 
     def destroy(self) -> None:
-        """Graceful shutdown: drain reconciliation thread then destroy the node."""
+        """Graceful shutdown: drain reconciliation thread then destroy node."""
         if self._reconciliation_thread is not None and \
                 self._reconciliation_thread.is_alive():
-            self.get_logger().info('[DESTROY] Waiting for reconciliation thread...')
+            self.get_logger().info(
+                '[DESTROY] Waiting for reconciliation thread...')
             self._reconciliation_thread.join(timeout=30.0)
             if self._reconciliation_thread.is_alive():
-                self.get_logger().warn('[DESTROY] Reconciliation thread did not finish.')
+                self.get_logger().warn(
+                    '[DESTROY] Reconciliation thread did not finish.')
 
         if self._http_server_thread is not None:
             self._http_stop_event.set()
