@@ -177,7 +177,7 @@ class TestASRIntegration(BaseASRManagerTest):
     """
     End-to-end integration tests using a real vLLM inference server.
 
-    Inherits ROS 2 lifecycle management from BaseASRManagerTest but connects 
+    Inherits ROS 2 lifecycle management from BaseASRManagerTest but connects
     the ASRManager to a real inference server instead of injecting mock clients.
     """
 

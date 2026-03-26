@@ -1,3 +1,4 @@
+import time
 from typing import Any, Optional
 
 from exodapt_robot_interfaces.srv import StartReconciliation
@@ -53,14 +54,23 @@ class DummyASRManager(BaseASRManager):
         seed: Optional[int] = None,
         stream: bool = False,
     ) -> Any:
+        start_time = time.time()
         meta = self._parse_state(state_json_str)
         self.stats.total_inference_requests += 1
+
         # Direct pass-through
-        return self._r_primary.run(meta.sequence,
+        resp = self._r_primary.run(meta.sequence,
                                    max_tokens=max_tokens,
                                    temp=temp,
                                    seed=seed,
                                    stream=stream)
+
+        # Record inference timing: (timestamp, inference_time_ms)
+        end_time = time.time()
+        inference_ms = (end_time - start_time) * 1000
+        self.stats.inference_times.append((end_time, inference_ms))
+
+        return resp
 
     def get_status(self) -> dict:
         return {

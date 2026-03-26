@@ -2,7 +2,7 @@ import asyncio
 import json
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import uvicorn
@@ -113,6 +113,9 @@ class ASRStats:
     swap_count: int = 0
     total_warmup_s: float = 0.0
     total_catchup_iterations: int = 0
+    inference_times: list = field(
+        default_factory=list
+    )  # List of (timestamp, inference_time_ms) tuples for plotting
 
 
 class BaseASRManager(Node):

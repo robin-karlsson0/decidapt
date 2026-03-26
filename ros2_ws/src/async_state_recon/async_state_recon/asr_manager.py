@@ -227,11 +227,19 @@ class ASRManager(BaseASRManager):
             ValueError         : Malformed or missing keys in state_json_str.
             json.JSONDecodeError: state_json_str is not valid JSON.
         """  # noqa
+        start_time = time.time()
         meta = self._parse_state(state_json_str)
         self.stats.total_inference_requests += 1
 
         with self._state_lock:
-            return self._route_inference(meta, max_tokens, temp, seed, stream)
+            result = self._route_inference(meta, max_tokens, temp, seed, stream)
+
+        # Record inference timing: (timestamp, inference_time_ms)
+        end_time = time.time()
+        inference_ms = (end_time - start_time) * 1000
+        self.stats.inference_times.append((end_time, inference_ms))
+
+        return result
 
     def get_model_name(self) -> str:
         return self.model_name
