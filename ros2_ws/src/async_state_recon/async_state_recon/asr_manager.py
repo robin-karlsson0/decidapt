@@ -251,6 +251,7 @@ class ASRManager(Node):
         self.declare_parameter('catchup_thresh', 64)
         self.declare_parameter('http_host', '0.0.0.0')
         self.declare_parameter('http_port', 8000)
+        self.declare_parameter('recon_srv_name', 'start_reconciliation')
 
         r1_url = self.get_parameter('r1_url').value
         r2_url = self.get_parameter('r2_url').value
@@ -259,6 +260,7 @@ class ASRManager(Node):
         self.catchup_thresh: int = self.get_parameter('catchup_thresh').value
         self.http_host: str = self.get_parameter('http_host').value
         self.http_port: int = self.get_parameter('http_port').value
+        self.recon_srv_name: str = self.get_parameter('recon_srv_name').value
 
         # ------------------------------------------------------------------
         # Inference resources
@@ -308,7 +310,7 @@ class ASRManager(Node):
         self._recon_callback_group = MutuallyExclusiveCallbackGroup()
         self._recon_service = self.create_service(
             StartReconciliation,
-            'start_reconciliation',
+            self.recon_srv_name,
             self._start_reconciliation_callback,
             callback_group=self._recon_callback_group
         )

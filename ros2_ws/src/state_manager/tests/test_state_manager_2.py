@@ -1,8 +1,11 @@
+import json
 import os
 import tempfile
+from unittest.mock import MagicMock, patch
 
 import pytest
 import rclpy
+from exodapt_robot_interfaces.srv import StartReconciliation
 from rclpy.exceptions import InvalidParameterTypeException
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.parameter import Parameter
@@ -83,6 +86,7 @@ class TestStateManager2:
             'long_term_memory_file_pth': '',
             'state_file_pth': '',
             'enable_sweep_service': True,
+            'asr_service_name': 'start_reconciliation',
         }
 
         # Override with provided kwargs
@@ -107,6 +111,8 @@ class TestStateManager2:
                       defaults['state_file_pth']),
             Parameter('enable_sweep_service', Parameter.Type.BOOL,
                       defaults['enable_sweep_service']),
+            Parameter('asr_service_name', Parameter.Type.STRING,
+                      defaults['asr_service_name']),
         ]
 
     def test_state_manager_initialization(self):
@@ -128,6 +134,15 @@ class TestStateManager2:
         assert hasattr(self.state_manager, '_cached_state_chunks_str')
         assert hasattr(self.state_manager, '_cached_running_actions')
         assert hasattr(self.state_manager, '_cached_robot_state_info')
+
+        # Verify ASR client and eviction tracking attributes exist
+        assert hasattr(self.state_manager, '_asr_client')
+        assert hasattr(self.state_manager, 'state_seq_ver')
+        assert hasattr(self.state_manager, 'evicted_static_len')
+
+        # Verify initial eviction counters are zero
+        assert self.state_manager.state_seq_ver == 0
+        assert self.state_manager.evicted_static_len == 0
 
         # Verify initial state is published
         assert self.state_manager.state_seq.get_num_state_chunks() == 0
@@ -373,9 +388,14 @@ class TestStateManager2:
             self.state_manager.llm_model_name)
 
         # Test initial state (prefix + empty chunks + suffix)
-        initial_state = self.state_manager.get_state()
+        state_json = self.state_manager.get_state()
+        state_dict = json.loads(state_json)
+
+        # Concatenate the actual LLM prompt components
+        initial_state_text = state_dict['pre'] + state_dict['chunks'] + state_dict['dyn']
+
         calculated_initial = len(self.state_manager)
-        actual_initial = self.token_len(initial_state, tokenizer)
+        actual_initial = self.token_len(initial_state_text, tokenizer)
 
         # Allow small margin for template overhead (~20 tokens)
         margin = 20
@@ -398,9 +418,14 @@ class TestStateManager2:
         assert self.state_manager.state_seq.get_num_state_chunks() == 5
 
         # Test that token length is reasonably accurate
-        state = self.state_manager.get_state()
+        state_json = self.state_manager.get_state()
+        state_dict = json.loads(state_json)
+
+        # Concatenate the actual LLM prompt components again
+        state_text = state_dict['pre'] + state_dict['chunks'] + state_dict['dyn']
+
         calculated_len = len(self.state_manager)
-        actual_len = self.token_len(state, tokenizer)
+        actual_len = self.token_len(state_text, tokenizer)
 
         # Allow small margin for template overhead
         assert abs(calculated_len - actual_len) <= margin, (
@@ -467,10 +492,17 @@ class TestStateManager2:
         print(f"Chunks after trim: {chunks_after_trim}")
         print(f"Token count after trim: {len(self.state_manager)}")
 
-        # After trimming, we should have fewer chunks
-        assert chunks_after_trim < chunks_before_trim or \
-               chunks_after_trim == chunks_before_trim, \
-               "State sequence should have been trimmed or stayed same"
+        # After trimming, we should have fewer chunks than the pre-trim amount + new messages
+        assert chunks_after_trim < chunks_before_trim + 5, \
+            "State sequence should have been trimmed but grew linearly instead"
+
+        # Verify eviction incremented state_seq_ver
+        assert self.state_manager.state_seq_ver >= 1, \
+            "state_seq_ver should be incremented after eviction"
+
+        # Verify evicted_static_len was captured
+        assert self.state_manager.evicted_static_len > 0, \
+            "evicted_static_len should be set after eviction"
 
         # Verify token limit is still respected
         current_tokens = len(self.state_manager)
@@ -601,6 +633,16 @@ class TestStateManager2:
         assert self.state_manager.state_seq.get_num_state_chunks() == 0
         assert self.state_manager._cached_state_chunks_str == ''
 
+        # Verify eviction tracking updated by sweep
+        assert self.state_manager.state_seq_ver >= 1, \
+            "state_seq_ver should be incremented after sweep"
+
+        # Verify metadata in state reflects cleared state
+        import json
+        state_dict = json.loads(self.state_manager.get_state())
+        assert state_dict['metadata']['state_seq_ver'] == self.state_manager.state_seq_ver  # noqa
+        assert state_dict['chunks'] == self.state_manager.state_chunks
+
         # Cleanup
         self.executor.remove_node(asr_node)
         self.executor.remove_node(client_node)
@@ -730,11 +772,14 @@ class TestStateManager2:
         state_token_len = len(self.state_manager)
 
         # Token length should be reasonably consistent
-        # (allow small margin for template overhead)
+        # (allow margin for template overhead and JSON escaping per chunk)
         tokenizer = AutoTokenizer.from_pretrained(
             self.state_manager.llm_model_name)
         actual_token_len = self.token_len(state, tokenizer)
-        margin = 20
+
+        # Base overhead (~20) + approx 6 tokens of JSON escaping overhead per chunk
+        margin = 20 + (actual_chunks * 6)
+
         assert abs(state_token_len - actual_token_len) <= margin, (
             f"State token length difference too large after concurrent "
             f"processing: calculated={state_token_len}, "
@@ -865,6 +910,14 @@ class TestStateManager2:
         assert abs(chunks_after_clear - expected_kept - 1) <= tolerance, (
             f"Expected ~{expected_kept + 1} chunks (30% + trigger message), "
             f"got {chunks_after_clear}")
+
+        # Verify eviction incremented state_seq_ver
+        assert self.state_manager.state_seq_ver >= 1, \
+            "state_seq_ver should be incremented after eviction"
+
+        # Verify evicted_static_len was captured
+        assert self.state_manager.evicted_static_len > 0, \
+            "evicted_static_len should be set after eviction"
 
         # Verify newest messages are kept (FIFO - oldest removed first)
         state = self.state_manager.get_state()
@@ -1011,6 +1064,10 @@ class TestStateManager2:
         assert cache_after_sweep == chunks_from_seq_after_sweep, \
             "Empty cache should match empty sequence after sweep"
 
+        # Verify evicted_static_len is set after sweep (state was evicted)
+        assert self.state_manager.state_seq_ver >= 2, \
+            "state_seq_ver should be incremented by clearing and sweep"
+
         # Cleanup
         self.executor.remove_node(asr_node)
         self.executor.remove_node(client_node)
@@ -1047,6 +1104,188 @@ class TestStateManager2:
         # Verify timestamp is stored in StateChunk
         chunk = list(self.state_manager.state_seq)[0]
         assert chunk.ts > 0, "StateChunk should have timestamp"
+
+        # Cleanup
+        self.executor.remove_node(asr_node)
+        asr_node.destroy_node()
+
+    def test_get_state_metadata_fields(self):
+        """Test that get_state() returns JSON with correct metadata fields.
+
+        Verifies the ASR-protocol metadata (state_idx, state_seq_ver,
+        static_char_len, evicted_char_length) are present and coherent.
+        """
+        import json
+
+        test_params = self.create_test_parameters()
+        self.state_manager = StateManager2(parameter_overrides=test_params)
+        self.executor.add_node(self.state_manager)
+
+        # Initial state should have zeroed eviction metadata
+        state_dict = json.loads(self.state_manager.get_state())
+        assert 'pre' in state_dict
+        assert 'chunks' in state_dict
+        assert 'dyn' in state_dict
+        assert 'metadata' in state_dict
+
+        meta = state_dict['metadata']
+        assert 'state_idx' in meta
+        assert 'state_seq_ver' in meta
+        assert 'static_char_len' in meta
+        assert 'evicted_char_length' in meta
+        assert meta['state_seq_ver'] == 0
+        assert meta['evicted_char_length'] == 0
+
+        # Add a message and check static_char_len is consistent
+        asr_node = rclpy.create_node('asr_publisher')
+        asr_publisher = asr_node.create_publisher(String, '/asr', 10)
+        self.executor.add_node(asr_node)
+
+        asr_publisher.publish(String(data='Metadata test message'))
+        self.executor.spin_once(timeout_sec=0.1)
+
+        state_dict_after = json.loads(self.state_manager.get_state())
+        meta_after = state_dict_after['metadata']
+
+        # static_char_len = len(pre) + len(chunks)
+        expected_static = (len(state_dict_after['pre'])
+                           + len(state_dict_after['chunks']))
+        assert meta_after['static_char_len'] == expected_static
+
+        # state_seq_ver still 0 (no eviction yet)
+        assert meta_after['state_seq_ver'] == 0
+
+        # Cleanup
+        self.executor.remove_node(asr_node)
+        asr_node.destroy_node()
+
+    def test_eviction_updates_state_seq_ver_and_evicted_static_len(self):
+        """Test that _evict increments state_seq_ver and sets evicted_static_len.
+
+        Calls _evict() directly under the lock (bypassing the reconciliation
+        call to avoid needing a live ASR service) and verifies the bookkeeping
+        variables are updated correctly.
+        """  # noqa
+        test_params = self.create_test_parameters(state_max_tokens=5000)
+        self.state_manager = StateManager2(parameter_overrides=test_params)
+        self.executor.add_node(self.state_manager)
+
+        asr_node = rclpy.create_node('asr_publisher')
+        asr_publisher = asr_node.create_publisher(String, '/asr', 10)
+        self.executor.add_node(asr_node)
+
+        # Fill state with a known number of chunks
+        for i in range(5):
+            asr_publisher.publish(String(data=f'Pre-eviction message {i}'))
+            self.executor.spin_once(timeout_sec=0.1)
+
+        assert self.state_manager.state_seq.get_num_state_chunks() == 5
+
+        ver_before = self.state_manager.state_seq_ver
+        prefix_len = self.state_manager.state_prefix_len
+
+        # Call _evict directly (skips reconciliation I/O)
+        with self.state_manager.lock:
+            evicted_state = self.state_manager._evict(ratio=0.5)
+
+        # state_seq_ver should have incremented by 1
+        assert self.state_manager.state_seq_ver == ver_before + 1
+
+        # evicted_static_len should equal prefix_len + len(surviving chunks str)
+        surviving_str = self.state_manager._cached_state_chunks_str
+        expected_j_eps = prefix_len + len(surviving_str)
+        assert self.state_manager.evicted_static_len == expected_j_eps
+
+        # X_exp = pre + surviving chunks (no suffix, no JSON wrapper)
+        assert evicted_state == (
+            self.state_manager.state_prefix + surviving_str)
+
+        # floor(5 * 0.5) = 2 chunks should remain
+        chunks_after = self.state_manager.state_seq.get_num_state_chunks()
+        assert chunks_after == 2
+
+        # Cleanup
+        self.executor.remove_node(asr_node)
+        asr_node.destroy_node()
+
+    def test_start_reconciliation_skipped_when_service_not_ready(self):
+        """Test that _call_start_reconciliation logs a warning when ASR service
+        is unavailable and does not raise an exception.
+
+        In the test environment no ASR service is running, so every eviction
+        should silently skip the reconciliation call.
+        """
+        test_params = self.create_test_parameters(state_max_tokens=200)
+        self.state_manager = StateManager2(parameter_overrides=test_params)
+        self.executor.add_node(self.state_manager)
+
+        asr_node = rclpy.create_node('asr_publisher')
+        asr_publisher = asr_node.create_publisher(String, '/asr', 10)
+        self.executor.add_node(asr_node)
+
+        # Fill up state to trigger eviction
+        message_count = 0
+        max_allowed = self.state_manager.state_max_tokens - 30
+        while len(self.state_manager) < max_allowed:
+            asr_publisher.publish(String(data=f'Fill {message_count}'))
+            self.executor.spin_once(timeout_sec=0.05)
+            message_count += 1
+            if message_count > 100:
+                break
+
+        # Publish a message that will trigger _evict_and_reconcile.
+        # ASR service is not running → warning logged, no exception raised.
+        asr_publisher.publish(String(data='Overflow trigger'))
+        self.executor.spin_once(timeout_sec=0.1)
+
+        # Eviction completed without error despite service being down
+        assert self.state_manager.state_seq_ver >= 1, \
+            "state_seq_ver should be incremented even when ASR service is down"
+
+        # Cleanup
+        self.executor.remove_node(asr_node)
+        asr_node.destroy_node()
+
+    def test_start_reconciliation_sends_correct_request(self):
+        """Test that _call_start_reconciliation sends the correct evicted_state
+        and k_target to the ASRManager service when the service is ready.
+
+        Uses mocks to simulate a ready service client without needing a live
+        ASR service.
+        """
+        test_params = self.create_test_parameters()
+        self.state_manager = StateManager2(parameter_overrides=test_params)
+        self.executor.add_node(self.state_manager)
+
+        asr_node = rclpy.create_node('asr_publisher')
+        asr_publisher = asr_node.create_publisher(String, '/asr', 10)
+        self.executor.add_node(asr_node)
+
+        for i in range(3):
+            asr_publisher.publish(String(data=f'Message {i}'))
+            self.executor.spin_once(timeout_sec=0.1)
+
+        # Patch the ASR client to simulate a ready service
+        mock_future = MagicMock()
+        self.state_manager._asr_client.service_is_ready = MagicMock(
+            return_value=True)
+        self.state_manager._asr_client.call_async = MagicMock(
+            return_value=mock_future)
+        mock_future.add_done_callback = MagicMock()
+
+        # Evict and then call reconciliation
+        with self.state_manager.lock:
+            evicted_state = self.state_manager._evict(ratio=0.5)
+        k_target = self.state_manager.state_seq_ver
+        self.state_manager._call_start_reconciliation(evicted_state, k_target)
+
+        # Verify call_async was invoked with a StartReconciliation.Request
+        self.state_manager._asr_client.call_async.assert_called_once()
+        call_args = self.state_manager._asr_client.call_async.call_args
+        req = call_args[0][0]
+        assert isinstance(req, StartReconciliation.Request)
+        assert req.evicted_state == evicted_state
+        assert req.evicted_state_seq_ver == k_target
 
         # Cleanup
         self.executor.remove_node(asr_node)
