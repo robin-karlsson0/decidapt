@@ -6,6 +6,7 @@ from typing import Generator, List
 
 import rclpy
 from async_state_recon.asr_manager import ASRManager
+from async_state_recon.dummy_asr_manager import DummyASRManager
 from async_state_recon.inference_client import InferenceClient
 from exodapt_robot_interfaces.srv import StartReconciliation
 from openai import OpenAI
@@ -19,12 +20,13 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.parameter import Parameter
 
 # Timeouts (in seconds)
-SERVER_STARTUP_TIMEOUT = 5.0   # Time allowed for uvicorn to bind the port
-SPIN_TIMEOUT = 0.1             # Executor spin timeout
+SERVER_STARTUP_TIMEOUT = 5.0  # Time allowed for uvicorn to bind the port
+SPIN_TIMEOUT = 0.1  # Executor spin timeout
 
 
-def _wait_for_port(
-        host: str, port: int, timeout: float = SERVER_STARTUP_TIMEOUT) -> bool:
+def _wait_for_port(host: str,
+                   port: int,
+                   timeout: float = SERVER_STARTUP_TIMEOUT) -> bool:
     """Poll until the HTTP server accepts connections or timeout expires."""
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -63,8 +65,11 @@ class MockInferenceClient(InferenceClient):
         self.call_history: List[str] = []
         self.last_prompt = None
 
-    def run(self, prompt: str, max_tokens: int = 1024,
-            stream: bool = False, **kwargs):
+    def run(self,
+            prompt: str,
+            max_tokens: int = 1024,
+            stream: bool = False,
+            **kwargs):
         """Simulate inference with configurable latency.
 
         Args:
@@ -140,9 +145,8 @@ class MockInferenceClient(InferenceClient):
                     ChunkChoice(
                         finish_reason=None,
                         index=0,
-                        delta=ChoiceDelta(
-                            content=token + ' ', role='assistant'
-                        ),
+                        delta=ChoiceDelta(content=token + ' ',
+                                          role='assistant'),
                     )
                 ],
                 created=int(time.time()),
@@ -234,23 +238,37 @@ class BaseASRManagerTest:
             Parameter('r2_url', Parameter.Type.STRING, r2_url),
             Parameter('client_type', Parameter.Type.STRING, client_type),
             Parameter('model_name', Parameter.Type.STRING, model_name),
-            Parameter('catchup_thresh', Parameter.Type.INTEGER, catchup_thresh),
+            Parameter('catchup_thresh', Parameter.Type.INTEGER,
+                      catchup_thresh),
             Parameter('http_host', Parameter.Type.STRING, http_host),
             Parameter('http_port', Parameter.Type.INTEGER, http_port),
         ]
 
-    def create_asr_manager(self, port: int) -> ASRManager:
-        """Instantiate ASRManager with test parameters and register it."""
-        asr_manager = ASRManager(
-            parameter_overrides=self.create_test_parameters(http_port=port))
-        self.executor.add_node(asr_manager)
-        return asr_manager
+    def create_asr_manager(self, port: int, is_dummy: bool = False):
+        """Instantiate the requested manager variant with test parameters."""
+        params = self.create_test_parameters(http_port=port)
+        if is_dummy:
+            manager = DummyASRManager(parameter_overrides=params)
+        else:
+            manager = ASRManager(parameter_overrides=params)
 
-    def inject_mocks(self):
+        self.executor.add_node(manager)
+        return manager
+
+    def inject_mocks(self, is_dummy: bool = False):
         """Helper to replace real inference clients with mocks."""
-        model_name = self.asr_manager.get_model_name()
-        mock_r1 = MockInferenceClient('R1', model_name, 'http://localhost:8001')
-        mock_r2 = MockInferenceClient('R2', model_name, 'http://localhost:8002')
+        # Use the property since we moved model_name to the base class
+        model_name = self.asr_manager.model_name
+
+        mock_r1 = MockInferenceClient('R1', model_name,
+                                      'http://localhost:8001')
+
+        if is_dummy:
+            self.asr_manager._r_primary = mock_r1
+            return mock_r1, None
+
+        mock_r2 = MockInferenceClient('R2', model_name,
+                                      'http://localhost:8002')
         self.asr_manager._r1 = mock_r1
         self.asr_manager._r2 = mock_r2
         self.asr_manager._r_primary = self.asr_manager._r1
@@ -426,7 +444,9 @@ class TestASRManagerHTTPServer(BaseASRManagerTest):
         params = self.create_completion_request()
         response = client.chat.completions.create(**params)
 
-        assert type(response) is ChatCompletion, 'Response not of type \'ChatCompletion\''  # noqa
+        assert type(
+            response
+        ) is ChatCompletion, 'Response not of type \'ChatCompletion\''  # noqa
         assert response.choices, 'Response must have at least one choice'
         content = response.choices[0].message.content
         assert content, 'Response message content must not be empty'
@@ -1160,3 +1180,151 @@ class TestASRManagerReconciliation(BaseASRManagerTest):
 
         assert result.success is False
         assert self.asr_manager._k == 5  # Unchanged, trigger rejected
+
+
+class TestDummyASRManager(BaseASRManagerTest):
+    """Unit tests for the single-resource synchronous fallback manager."""
+
+    @classmethod
+    def _get_port(self) -> int:
+        port = TestDummyASRManager._starting_port + TestDummyASRManager._port_counter
+        TestDummyASRManager._port_counter += 1
+        return port
+
+    @classmethod
+    def setup_class(cls):
+        rclpy.init()
+        cls.executor = MultiThreadedExecutor()
+        cls._starting_port = 19100
+        cls._port_counter = 0
+
+    @classmethod
+    def teardown_class(cls):
+        cls.executor.shutdown()
+        rclpy.shutdown()
+
+    def setup_method(self):
+        self.asr_manager = None
+
+    def teardown_method(self):
+        if self.asr_manager is not None:
+            self.executor.remove_node(self.asr_manager)
+            self.asr_manager.destroy_node()
+            self.asr_manager = None
+
+    def test_dummy_manager_routes_sync_inference(self):
+        """Verify inference requests are passed directly to the single client."""
+        port = self._get_port()
+        self.asr_manager = self.create_asr_manager(port, is_dummy=True)
+        mock_r1, _ = self.inject_mocks(is_dummy=True)
+
+        state_json_str = json.dumps({
+            "sequence": "pre chunks dyn",
+            "j_t": 10,
+            "k_t": 0,
+            "j_epsilon_t": 0
+        })
+
+        self.asr_manager.run(state_json_str)
+
+        assert mock_r1.call_count == 1, "Request must route to primary mock"
+        assert self.asr_manager.stats.total_inference_requests == 1
+        assert mock_r1.last_prompt == "pre chunks dyn"
+
+    def test_dummy_manager_acknowledges_reconciliation_safely(self):
+        """Verify the dummy service immediately returns True without threads."""
+        port = self._get_port()
+        self.asr_manager = self.create_asr_manager(port, is_dummy=True)
+
+        request = StartReconciliation.Request()
+        request.evicted_state = "pre chunk2 "
+        request.evicted_state_seq_ver = 1
+        response = StartReconciliation.Response()
+
+        result = self.asr_manager._dummy_reconciliation_callback(
+            request, response)
+
+        assert result.success is True, "Service must acknowledge eviction"
+        assert not hasattr(self.asr_manager, '_reconciliation_thread'), \
+            "Dummy should not possess or spawn reconciliation threads"
+
+    def test_dummy_manager_http_server_openai_client_compatibility(self):
+        """HTTP endpoint accepts a query and returns a ChatCompletion object.
+
+        Verifies the full round-trip for the single-resource fallback:
+          1. DummyASRManager starts with its HTTP server.
+          2. A single mock inference client is injected.
+          3. The OpenAI Python client POSTs to /v1/chat/completions.
+          4. The response is a ChatCompletion with non-empty message content.
+        """
+        port = self._get_port()
+        self.asr_manager = self.create_asr_manager(port, is_dummy=True)
+        mock_r1, _ = self.inject_mocks(is_dummy=True)
+
+        assert _wait_for_port('127.0.0.1', port), \
+            f'HTTP server did not start on port {port}'
+
+        # Submit via the OpenAI-compatible client
+        client = OpenAI(
+            base_url=f'http://127.0.0.1:{port}/v1',
+            api_key='dummy-key',
+        )
+        params = self.create_completion_request()
+        response = client.chat.completions.create(**params)
+
+        assert type(
+            response
+        ) is ChatCompletion, 'Response not of type \'ChatCompletion\''
+        assert response.choices, 'Response must have at least one choice'
+        content = response.choices[0].message.content
+        assert content, 'Response message content must not be empty'
+
+        # We only verify r_primary, as r_secondary doesn't exist in dummy mode
+        assert mock_r1.call_count == 1, \
+            f'Expected 1 inference call on r_primary, got {mock_r1.call_count}'
+
+    def test_dummy_manager_http_server_streaming_response(self):
+        """HTTP endpoint correctly yields SSE chunks when stream=True.
+
+        Verifies the full streaming round-trip for the single-resource fallback:
+          1. DummyASRManager starts with its HTTP server.
+          2. A single mock inference client is injected to simulate streaming.
+          3. The OpenAI Python client POSTs with stream=True.
+          4. The response is a generator yielding chunked deltas.
+          5. The reconstructed text matches the expected mock output.
+        """
+        port = self._get_port()
+        self.asr_manager = self.create_asr_manager(port, is_dummy=True)
+        mock_r1, _ = self.inject_mocks(is_dummy=True)
+
+        assert _wait_for_port('127.0.0.1', port), \
+            f'HTTP server did not start on port {port}'
+
+        # Submit via the OpenAI-compatible client
+        client = OpenAI(
+            base_url=f'http://127.0.0.1:{port}/v1',
+            api_key='dummy-key',
+        )
+
+        params = self.create_completion_request(stream=True)
+        response_stream = client.chat.completions.create(**params)
+
+        collected_chunks = []
+        collected_content = ""
+
+        # Iterate over the Server-Sent Events (SSE) stream
+        for chunk in response_stream:
+            collected_chunks.append(chunk)
+            if chunk.choices and chunk.choices[0].delta.content:
+                collected_content += chunk.choices[0].delta.content
+
+        # Assertions
+        assert len(collected_chunks) > 1, \
+            f'Expected multiple chunks for a streaming response, got {len(collected_chunks)}'
+        assert len(collected_content) > 0, \
+            'Streamed message content must not be empty'
+        assert 'Mock response 1 for prompt:' in collected_content, \
+            'Reconstructed content did not match expected mock output'
+
+        assert mock_r1.call_count == 1, \
+            f'Expected 1 inference call on r_primary, got {mock_r1.call_count}'
