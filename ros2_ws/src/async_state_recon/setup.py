@@ -14,7 +14,7 @@ setup(
          ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         # Launch files
-        (os.path.join('share', package_name, 'launch'), glob('launch/*')),
+        (os.path.join('share', package_name, 'launch'), glob.glob('launch/*')),
     ],
     install_requires=['setuptools', 'exodapt_robot_interfaces'],
     zip_safe=True,
