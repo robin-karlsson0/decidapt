@@ -89,8 +89,6 @@ class ASRManager(BaseASRManager):
     eviction_ratio : float
         Fraction of chunks to retain after eviction, 0 < ratio < 1
         (default: 0.3, i.e. keep the most recent 30 %)
-    enable_http_server : bool
-        Expose an OpenAI-compatible HTTP endpoint (default: False)
     http_host : str
         Bind address for the HTTP server (default: '0.0.0.0')
     http_port : int
@@ -232,7 +230,8 @@ class ASRManager(BaseASRManager):
         self.stats.total_inference_requests += 1
 
         with self._state_lock:
-            result = self._route_inference(meta, max_tokens, temp, seed, stream)
+            result = self._route_inference(meta, max_tokens, temp, seed,
+                                           stream)
 
         # Record inference timing: (timestamp, inference_time_ms)
         end_time = time.time()
