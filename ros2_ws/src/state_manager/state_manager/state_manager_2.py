@@ -3,6 +3,7 @@ import threading
 from datetime import datetime
 
 import rclpy
+from exodapt_robot_interfaces.srv import StartReconciliation
 from exodapt_robot_pt import (appended_state_chunks_pt,
                               dynamic_state_suffix_pt, static_state_prefix_pt)
 from rclpy.node import Node
@@ -48,12 +49,17 @@ class StateManager2(Node):
             thought_topics: ['/agency']
             action_running_topic: '/action_running'
             robot_state_info_topic: '/robot_state_info'
+            asr_service_name: 'start_reconciliation'
 
     State Chunk Processing Flow:
         1. Subscribed topic publishes a message
         2. Callback processes message (event/continuous/thought)
         3. Message formatted into StateChunk with timestamp and token count
-        4. If total tokens would exceed max, clear oldest chunks by ratio
+        4. If total tokens would exceed max, _evict() is called:
+               a. Clears oldest chunks in state_seq by state_seq_clear_ratio
+               b. Bumps state_seq_ver k and captures evicted_static_len
+               c. Returns the evicted state string X_eps
+               d. _call_start_reconciliation() notifies ASRManager
         5. New chunk appended to sequence and cached string updated
         6. Updated state published to state topic
 
@@ -64,6 +70,9 @@ class StateManager2(Node):
         _cached_state_chunks_str: Performance-optimized chunk string cache
         _cached_running_actions: Current running actions (from subscription)
         _cached_robot_state_info: Robot state info (from subscription)
+        state_seq_ver: Sequence version counter k, incremented on every eviction
+        evicted_static_len: len(pre + chunks) captured at the moment of eviction
+            (j_eps in the ASR algorithm)
 
     Token Counting:
         - state_prefix_num_tokens: Static, cached at initialization
@@ -77,6 +86,7 @@ class StateManager2(Node):
     Key Methods:
         - get_state() -> str: Get complete current state
         - get_state_token_len() -> int: Get total token count
+        - _evict() -> str: Evict oldest chunks and notify ASRManager
         - sweep_state service: Clear all state chunks via ROS2 service
 
     Properties:
@@ -123,6 +133,7 @@ class StateManager2(Node):
         self.declare_parameter('long_term_memory_file_pth', '')
         self.declare_parameter('state_file_pth', '')
         self.declare_parameter('enable_sweep_service', True)
+        self.declare_parameter('asr_service_name', 'start_reconciliation')
 
         self.state_topic_name = self.get_parameter('state_topic_name').value
         self.llm_model_name = self.get_parameter('llm_model_name').value
@@ -144,6 +155,7 @@ class StateManager2(Node):
         self.state_file_pth = self.get_parameter('state_file_pth').value
         self.enable_sweep_service = self.get_parameter(
             'enable_sweep_service').value
+        self.asr_service_name = self.get_parameter('asr_service_name').value
 
         self.get_logger().info(
             'StateManager initializing\n'
@@ -159,7 +171,8 @@ class StateManager2(Node):
             f'  robot_state_info_topic: {self.robot_state_info_topic}\n'
             f'  long_term_memory_file_pth: {self.ltm_file_pth}\n'
             f'  state_file_pth: {self.state_file_pth}\n'
-            f'  enable_sweep_service: {self.enable_sweep_service}')
+            f'  enable_sweep_service: {self.enable_sweep_service}\n'
+            f'  asr_service_name: {self.asr_service_name}')
 
         # LLM tokenizer for measuring state length
         self.tokenizer = AutoTokenizer.from_pretrained(self.llm_model_name)
@@ -204,6 +217,16 @@ class StateManager2(Node):
         self.evicted_static_len = 0
 
         self.lock = threading.Lock()
+
+        ####################################
+        #  ASR StartReconciliation client
+        ####################################
+
+        self._asr_client = self.create_client(
+            StartReconciliation, self.asr_service_name)
+        self.get_logger().info(
+            f'StartReconciliation client created for service: '
+            f'{self.asr_service_name}')
 
         ######################
         #  Long-Term Memory
@@ -295,6 +318,8 @@ class StateManager2(Node):
             self.get_logger().info('Sweep state service created')
         else:
             self.get_logger().info('Sweep state service disabled')
+
+        self.get_logger().info('StateManager2 initialisation complete.')
 
     @property
     def state_chunks(self) -> str:
@@ -456,30 +481,24 @@ class StateManager2(Node):
         new_chunk = self.format_state_chunk(topic, msg_ts_str, msg.data)
         new_num_tokens = self.get_token_len(new_chunk)
 
-        # Critical section: check overflow and append
+        # Evict+reconcile outside the lock if the new chunk would overflow.
+        # _evict_and_reconcile() acquires the lock internally for the state
+        # mutation, then releases it before calling the ASR service (I/O).
         with self.lock:
             total_with_new = self.get_state_token_len() + new_num_tokens
-            if total_with_new >= self.state_max_tokens:
-                self.state_seq.clear(self.state_seq_clear_ratio)
-                self.state_seq_ver += 1
-                # Regenerate cached string from remaining chunks
-                state_chunks = [
-                    state_chunk.chunk for state_chunk in self.state_seq
-                ]
-                self._cached_state_chunks_str = '\n'.join(state_chunks)
-                # Capture evicted static length before new chunk is appended
-                self.evicted_static_len = len(self.state_prefix) + \
-                    len(self._cached_state_chunks_str)
+            needs_eviction = total_with_new >= self.state_max_tokens
 
-            # Append new chunk
+        if needs_eviction:
+            self._evict_and_reconcile()
+
+        # Append new chunk under lock
+        with self.lock:
             self.state_seq.append(StateChunk(new_chunk, new_num_tokens, ts))
 
-            # Update cached string
             if self._cached_state_chunks_str:
                 self._cached_state_chunks_str += '\n' + new_chunk
             else:
                 self._cached_state_chunks_str = new_chunk
-
 
         # Write to long-term memory
         if self.long_term_memory_file_pth:
@@ -516,21 +535,25 @@ class StateManager2(Node):
         """Get complete state representation.
 
         Returns JSON string with static prefix, formatted state chunks,
-        dynamic suffix, and tracking metadata. Reads cached variables
-        that may update concurrently; brief inconsistency is acceptable.
+        dynamic suffix, and tracking metadata aligned with the ASR protocol
+        (j_t, k_t, j_epsilon_t cursors used by ASRManager).
 
         Returns:
             str: JSON string containing the state and metadata.
         """
         state_chunks = self.state_chunks
+        static_char_len = self.state_prefix_len + len(state_chunks)
         state_dict = {
             "pre": self.state_prefix,
             "chunks": state_chunks,
             "dyn": self.state_suffix,
             "metadata": {
                 "state_idx": self.state_idx,
+                # k_t — sequence version, incremented on each eviction
                 "state_seq_ver": self.state_seq_ver,
-                "static_char_len": self.state_prefix_len + len(state_chunks),
+                # j_t — length of static portion (pre + chunks)
+                "static_char_len": static_char_len,
+                # j_epsilon_t — static char len at last eviction boundary
                 "evicted_char_length": self.evicted_static_len
             }
         }
@@ -574,7 +597,9 @@ class StateManager2(Node):
     def _sweep_state_callback(self, request, response):
         """Service callback to clear all state chunks.
 
-        Thread-safe: Uses lock to protect state modifications.
+        Delegates to _evict_and_reconcile() (with ratio=0 to clear all chunks).
+
+        Thread-safe: lock is acquired inside _evict_and_reconcile().
 
         Args:
             request: Trigger service request (unused).
@@ -583,31 +608,149 @@ class StateManager2(Node):
         Returns:
             Trigger.Response: Success status and message with chunk count.
         """
-        # Thread-safe: Use lock to protect state modifications
         with self.lock:
-            # Count chunks before clearing for logging
             total_count = self.state_seq.get_num_state_chunks()
-
-            # Clear state sequence (0% = clear all)
-            self.state_seq.clear(0.0)
-            self.state_seq_ver += 1
-
-            # Clear cached state chunks string
-            self._cached_state_chunks_str = ''
+        self._evict_and_reconcile(ratio=0.0)
 
         # Publish updated (empty) state
         self._publish_state()
         self.state_idx += 1
 
-        # Prepare response
         response.success = True
         response.message = (
             f'State swept successfully. Cleared {total_count} chunks')
-
-        # Log the operation
         self.get_logger().info(f'Sweep state completed: {response.message}')
-
         return response
+
+    #####################
+    #  Eviction
+    #####################
+
+    def _evict_and_reconcile(self, ratio: float | None = None) -> None:
+        """Evict oldest chunks and immediately notify ASRManager to reconcile.
+
+        This is the single entry point for all eviction operations. It ensures
+        that StartReconciliation is always called after every eviction, so the
+        two steps cannot be decoupled by accident during future refactoring.
+
+        Internally, the lock-protected _evict() runs first, then
+        _call_start_reconciliation() is invoked outside the lock (I/O must
+        not be held under the state lock).
+
+        Args:
+            ratio: Fraction of chunks to retain after eviction. Defaults to
+                self.state_seq_clear_ratio. Pass 0.0 to clear all chunks
+                (used by sweep_state).
+        """
+        with self.lock:
+            evicted_state = self._evict(ratio)
+        self._call_start_reconciliation(evicted_state, self.state_seq_ver)
+
+    def _evict(self, ratio: float | None = None) -> str:
+        """Evict oldest state chunks and prepare the evicted state for ASR.
+
+        Clears the oldest (1 - ratio) fraction of chunks from state_seq,
+        rebuilds the cached chunk string from the survivors, increments
+        state_seq_ver (k), and captures evicted_static_len (j_ε) as the
+        static char length *after* eviction but *before* any new chunk is
+        appended.
+
+        MUST be called with self.lock held. Prefer _evict_and_reconcile()
+        at call sites to guarantee the paired reconciliation notification.
+
+        Args:
+            ratio: Fraction of chunks to retain.  Defaults to
+                self.state_seq_clear_ratio.  Pass 0.0 to clear all chunks
+                (used by sweep_state).
+
+        Returns:
+            str: The evicted state string X_ε = pre + surviving chunks,
+                passed to ASRManager via StartReconciliation.
+        """
+        if ratio is None:
+            ratio = self.state_seq_clear_ratio
+
+        self.state_seq.clear(ratio)
+        self.state_seq_ver += 1
+
+        # Rebuild cached string from surviving chunks
+        surviving_chunks = [sc.chunk for sc in self.state_seq]
+        self._cached_state_chunks_str = '\n'.join(surviving_chunks)
+
+        # j_ε: static char length at eviction boundary (pre + surviving chunks)
+        # This is captured *before* the triggering new chunk is appended.
+        self.evicted_static_len = (
+            self.state_prefix_len + len(self._cached_state_chunks_str)
+        )
+
+        # X_ε: full static content handed to ASRManager for KV-cache warmup
+        evicted_state = self.state_prefix + self._cached_state_chunks_str
+
+        self.get_logger().info(
+            f'[EVICT] Eviction complete: '
+            f'ratio={ratio:.2f} '
+            f'k={self.state_seq_ver} '
+            f'|X_ε|={len(evicted_state)}c '
+            f'j_ε={self.evicted_static_len}c'
+        )
+        return evicted_state
+
+    def _call_start_reconciliation(
+        self, evicted_state: str, k_target: int
+    ) -> None:
+        """Send a non-blocking StartReconciliation request to ASRManager.
+
+        Fire-and-forget: uses async_send_request so the calling thread is not
+        blocked waiting for ASRManager to acknowledge.  A callback logs the
+        outcome.
+
+        Safe to call without self.lock held.
+
+        Args:
+            evicted_state: X_ε string (pre + surviving chunks after eviction).
+            k_target: New sequence version (state_seq_ver after increment).
+        """
+        if not self._asr_client.service_is_ready():
+            self.get_logger().warn(
+                f'[RECON] StartReconciliation service not ready; '
+                f'skipping notification for k_target={k_target}.'
+            )
+            return
+
+        req = StartReconciliation.Request()
+        req.evicted_state = evicted_state
+        req.evicted_state_seq_ver = k_target
+
+        future = self._asr_client.call_async(req)
+        future.add_done_callback(
+            lambda f: self._on_start_reconciliation_response(f, k_target)
+        )
+        self.get_logger().info(
+            f'[RECON] StartReconciliation sent: '
+            f'k_target={k_target} |X_ε|={len(evicted_state)}c'
+        )
+
+    def _on_start_reconciliation_response(
+        self, future, k_target: int
+    ) -> None:
+        """Log the outcome of a StartReconciliation service call."""
+        try:
+            result = future.result()
+            if result.success:
+                self.get_logger().info(
+                    f'[RECON] StartReconciliation acknowledged: '
+                    f'k_target={k_target}'
+                )
+            else:
+                self.get_logger().warn(
+                    f'[RECON] StartReconciliation rejected by ASRManager: '
+                    f'k_target={k_target}'
+                )
+        except Exception as e:
+            self.get_logger().error(
+                f'[RECON] StartReconciliation call failed: '
+                f'k_target={k_target} error={e}'
+            )
 
     #####################
     #  Utility methods

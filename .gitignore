@@ -162,6 +162,7 @@ cython_debug/
 #.idea/
 
 .vscode/
+uv.lock
 
 ros2_ws/build
 ros2_ws/install
