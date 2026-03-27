@@ -20,7 +20,6 @@
        description="Fraction of chunks to retain after eviction"/>
 
   <!-- Optional OpenAI-compatible HTTP server -->
-  <arg name="enable_http_server" default="false"/>
   <arg name="http_host" default="0.0.0.0"/>
   <arg name="http_port" default="8000"/>
 
@@ -38,7 +37,6 @@
     <param name="model_name" value="$(var model_name)"/>
     <param name="catchup_thresh" value="$(var catchup_thresh)"/>
     <param name="eviction_ratio" value="$(var eviction_ratio)"/>
-    <param name="enable_http_server" value="$(var enable_http_server)"/>
     <param name="http_host" value="$(var http_host)"/>
     <param name="http_port" value="$(var http_port)"/>
   </node>
