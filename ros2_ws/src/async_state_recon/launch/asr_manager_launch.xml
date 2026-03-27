@@ -1,0 +1,45 @@
+<launch>
+  <!-- ================================================================
+       Factory switch
+       r2_url = ""        → DummyASRManager  (single resource)
+       r2_url = <url>     → ASRManager       (dual resource, Algorithm 1)
+       ================================================================ -->
+  <arg name="r1_url" default="http://localhost:8001"
+       description="Primary vLLM server URL"/>
+  <arg name="r2_url" default=""
+       description="Secondary vLLM server URL (empty = single-resource / dummy mode)"/>
+
+  <!-- Inference backend -->
+  <arg name="client_type" default="vllm"/>
+  <arg name="model_name" default=""/>
+
+  <!-- Algorithm 1 tuning -->
+  <arg name="catchup_thresh" default="512"
+       description="Max |\Delta X_exp| chars before catch-up loop exits"/>
+  <arg name="eviction_ratio" default="0.3"
+       description="Fraction of chunks to retain after eviction"/>
+
+  <!-- Optional OpenAI-compatible HTTP server -->
+  <arg name="enable_http_server" default="false"/>
+  <arg name="http_host" default="0.0.0.0"/>
+  <arg name="http_port" default="8000"/>
+
+  <node pkg="async_state_recon"
+        exec="asr_manager"
+        name="asr_manager"
+        output="screen">
+
+    <!-- Factory-routing parameters (read by the sniffer node in main()) -->
+    <param name="r1_url" value="$(var r1_url)"/>
+    <param name="r2_url" value="$(var r2_url)"/>
+
+    <!-- Forwarded to whichever concrete node is instantiated -->
+    <param name="client_type" value="$(var client_type)"/>
+    <param name="model_name" value="$(var model_name)"/>
+    <param name="catchup_thresh" value="$(var catchup_thresh)"/>
+    <param name="eviction_ratio" value="$(var eviction_ratio)"/>
+    <param name="enable_http_server" value="$(var enable_http_server)"/>
+    <param name="http_host" value="$(var http_host)"/>
+    <param name="http_port" value="$(var http_port)"/>
+  </node>
+</launch>
