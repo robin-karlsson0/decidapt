@@ -8,14 +8,14 @@ management and zero-latency inference routing.
 Algorithm Overview
 ------------------
 State Variables (per Algorithm 1):
-  j          : Char length of current active seq static state (pre + chunks)
-  k          : Current active sequence version
-  k_ready    : Highest sequence version fully precomputed on r_secondary
-  j_ε        : Evicted sequence static state char len (running eviction cursor)
-  X_recon    : Reconciliation state — extends current seq w. new evicted chunks
-  ΔX_ε       : Catch-up buffer for chunks that arrive during r_secondary warmup
-  r_primary  : Resource actively serving inference (KV cache = current sequence)
-  r_secondary: Resource precomputing KV cache for the new evicted sequence
+  j           : Char length of current active seq static state (pre + chunks)
+  k           : Current active sequence version
+  k_ready     : Highest sequence version fully precomputed on r_secondary
+  j_exp       : Evicted sequence static state char len (running eviction cursor)
+  X_recon     : Reconciliation state — extends current seq w. new evicted chunks
+  Delta_X_exp : Catch-up buffer for chunks that arrive during r_secondary warmup
+  r_primary   : Resource actively serving inference (KV cache = current sequence)
+  r_secondary : Resource precomputing KV cache for the new evicted sequence
 
 Three Inference Routing Cases:
   Case 1 (k_t == k)       : Sequence continuation → serve on r_primary
@@ -104,7 +104,7 @@ class ASRManager(BaseASRManager):
         Held by every call to run() / _route_inference().
 
     _delta_x_epsilon_lock (Lock)
-        Guards only _delta_x_epsilon (the catch-up buffer ΔX_ε).
+        Guards only _delta_x_epsilon (the catch-up buffer Delta_X_exp).
         May be acquired *while* _state_lock is held (in _route_inference)
         but is NEVER the outer lock — no inverse nesting occurs.
 
@@ -433,7 +433,7 @@ class ASRManager(BaseASRManager):
         (e.g. rapid consecutive evictions), the call is a no-op with a warning.
 
         Args:
-            x_epsilon : Initial evicted state X_ε = sequence[:j_epsilon_t].
+            x_epsilon : Initial evicted state X_exp = sequence[:j_epsilon_t].
             k_target  : New sequence version (k+1) to precompute on r_secondary.
         """
         with self._state_lock:
@@ -456,22 +456,23 @@ class ASRManager(BaseASRManager):
         )
         self._reconciliation_thread.start()
 
-        self.get_logger().info(f'[RECON] Started reconciliation thread: '
-                               f'k_target={k_target} |X_ε|={len(x_epsilon)}c '
-                               f'r_secondary={self._r_secondary.name}')
+        self.get_logger().info(
+            f'[RECON] Started reconciliation thread: '
+            f'k_target={k_target} |X_exp|={len(x_epsilon)}c '
+            f'r_secondary={self._r_secondary.name}')
 
     def _reconcile(self, x_epsilon: str, k_target: int) -> None:
-        """Background implementation of Algorithm 1 – Reconcile(X_ε, k_target).
+        """Background implementation of Algorithm 1 Reconcile(X_exp, k_target).
 
         Runs in a daemon thread spawned by _start_reconciliation().
 
         Procedure (mirrors Algorithm 1 exactly):
           1. Lock r_secondary from straggler access  (is_reconciling already True)
-          2. Clear ΔX_ε catch-up buffer  (fresh start)
-          3. Warmup : full KV-cache prefill of X_ε on r_secondary (slow, ~seconds)
-          4. Catch-up loop : iteratively prefill accumulated ΔX_ε until
-             |ΔX_ε| ≤ N_catch-up  (fast — incremental prefill only)
-          5. Final drain : prefill any remaining ΔX_ε below the threshold
+          2. Clear Delta_X_exp catch-up buffer  (fresh start)
+          3. Warmup : full KV-cache prefill of X_exp on r_secondary (slow, ~seconds)
+          4. Catch-up loop : iteratively prefill accumulated Delta_X_exp until
+             |Delta_X_exp| ≤ N_catch-up  (fast — incremental prefill only)
+          5. Final drain : prefill any remaining Delta_X_exp below the threshold
           6. Authorise swap : set k_ready = k_target
 
         The Case 2b handler in _route_inference performs the actual pointer swap
@@ -488,14 +489,14 @@ class ASRManager(BaseASRManager):
         """  # noqa
         try:
             # ---- Step 1: Clear catch-up buffer ----
-            # Algorithm 1 line: "Lock(L_{ΔXε}); ΔX_ε ← ∅; Unlock(L_{ΔXε})"
+            # Algorithm 1 line: "Lock(L_{Delta_X_exp}); Delta_X_exp ← \emptyset; Unlock(L_{Delta_X_exp})"  # noqa
             with self._delta_x_epsilon_lock:
                 self._delta_x_epsilon = ''
 
             # ---- Step 2: Warmup — full prefill of evicted state ----
-            # Algorithm 1 line: "LLM(X_ε, r_secondary)"
+            # Algorithm 1 line: "LLM(X_exp, r_secondary)"
             self.get_logger().info(
-                f'[RECON] Warmup: prefilling |X_ε|={len(x_epsilon)}c '
+                f'[RECON] Warmup: prefilling |X_exp|={len(x_epsilon)}c '
                 f'on {self._r_secondary.name}')
             t_warmup = time.monotonic()
             self._prefill(x_epsilon, self._r_secondary)
@@ -507,7 +508,7 @@ class ASRManager(BaseASRManager):
             x_epsilon_local = x_epsilon
 
             # ---- Step 3: Catch-up loop ----
-            # Algorithm 1: "while |ΔX_ε| > N_catch-up do ..."
+            # Algorithm 1: "while |Delta_X_exp| > N_catch-up do ..."
             catchup_iter = 0
             while True:
                 with self._delta_x_epsilon_lock:
@@ -521,7 +522,7 @@ class ASRManager(BaseASRManager):
 
                 # Atomically snapshot and clear the buffer so new chunks can
                 # accumulate while we prefill this batch.
-                # Algorithm 1: "ΔX'_ε ← ΔX_ε; ΔX_ε ← ∅"
+                # Algorithm 1: "Delta_X'_exp ← Delta_X_exp; Delta_X_exp ← \emptyset"  # noqa
                 with self._delta_x_epsilon_lock:
                     delta_snapshot = self._delta_x_epsilon
                     self._delta_x_epsilon = ''

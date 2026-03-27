@@ -81,8 +81,8 @@ class StreamWrapper:
 class StateMetadata:
     """Immutable parsed metadata extracted from an X_t state message.
 
-    Mirrors the (j_t, k_t, j_{ε,t}) triple unpacked at the top of
-    Algorithm 1 – Inference(X_t).
+    Mirrors the (j_t, k_t, j_{exp,t}) triple unpacked at the top of
+    Algorithm 1 Inference(X_t).
     """
     sequence: str  # Full X_t content
     j_t: int  # len(static prefix)  — boundary between static and dyn
