@@ -8,6 +8,7 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from std_msgs.msg import String
+from std_srvs.srv import SetBool
 
 from .action_registry import ActionRegistry
 
@@ -38,6 +39,7 @@ class ActionCycleController(Node):
         - Automatic fallback to 'do nothing' action for invalid decisions
         - Integration with ActionManager for coordinated action execution
         - State-driven decision making with external action decision service
+        - Pause/resume support via ROS 2 service
 
     Parameters:
         ac_freq (float): Action cycle frequency in Hz (default: 1.0)
@@ -54,6 +56,11 @@ class ActionCycleController(Node):
     Action Clients:
         - action_decision_action_server (exodapt_robot_interfaces/ActionDecision):
             Requests action decisions based on current state
+
+    Services:
+        - set_action_cycle_paused (std_srvs/SetBool): Pause (True) or resume
+            (False) the action cycle. Cancels the timer when paused and
+            recreates it on resume. No-op if already in the requested state.
 
     Example Usage:
         The node automatically starts the action cycle upon initialization.
@@ -129,6 +136,10 @@ class ActionCycleController(Node):
         self.timer = self.create_timer(self.ac_loop_freq,
                                        self.run_action_cycle)
 
+        self.paused = False
+        self.create_service(SetBool, 'set_action_cycle_paused',
+                            self.set_action_cycle_paused_callback)
+
         # Used to prevent spamming state with high-freq. 'do nothing' actions
         self.prev_decision = None  # TODO Needed ???
 
@@ -176,6 +187,26 @@ class ActionCycleController(Node):
             ActionDecision,
             'action_decision_action_server',
         )
+
+    def set_action_cycle_paused_callback(self, request, response):
+        """Handle requests to pause or resume the action cycle.
+
+        Args:
+            request: SetBool request where data=True pauses and data=False resumes.
+            response: SetBool response with success flag and current state message.
+        """
+        if request.data and not self.paused:
+            self.timer.cancel()
+            self.paused = True
+            self.get_logger().info('Action cycle paused')
+        elif not request.data and self.paused:
+            self.timer = self.create_timer(self.ac_loop_freq,
+                                           self.run_action_cycle)
+            self.paused = False
+            self.get_logger().info('Action cycle resumed')
+        response.success = True
+        response.message = 'paused' if self.paused else 'running'
+        return response
 
     def run_action_cycle(self):
         """Execute a single iteration of the action cycle.
